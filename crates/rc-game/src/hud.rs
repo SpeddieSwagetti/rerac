@@ -548,6 +548,7 @@ pub struct HudState {
     /// Port-only: the game pixels the frame extends past the 512-wide screen on each side (16:9; 0 at 4:3, the TV's).
     /// The slots anchored left or right ([`ANCHOR_BITS`] 4 / 8) move out by it, to the frame's edges ([`Self::anchor`]).
     pub side_extra: i32,
+    pub show_context_controls: bool,
 }
 
 impl HudState {
@@ -580,6 +581,7 @@ impl HudState {
             giant_up: false,
             side_extra: 0,
             morph_last: (false, -1),
+            show_context_controls: false,
         }
         .with_sizes()
     }
@@ -665,6 +667,109 @@ impl HudState {
                     self.words.insert(k, v);
                 }
             }
+        }
+    }
+
+    /// What each face button does for Ratchet right now, as `[△, □, ○, ✕]` (`None`: that button is left out). Rules
+    /// read the movement group (`Inputs::group`) and state (`Inputs::hero_state`): docs/plan/hero_states.md §0.3 / §1.
+    fn pad_hints(&self) -> [Option<&'static str>; 4] {
+        let i = &self.inputs;
+        // Another body, a scene or menu, or the game has the pad: scripted (9), dead (0x14), board (0x16), cutscene (0x18).
+        if i.body != 0 || i.mode != 0 || matches!(i.group, 9 | 0x14 | 0x16 | 0x18) { return [None; 4]; }
+        let wrench = i.held_item == 8;
+        let fire_or_equip = if wrench { Some("Equip Weapon") } else { i.weapon.is_some().then_some("Fire") };
+        let swing = Some("Swing");
+        let air = Some("Air Strike");
+        let equip = wrench.then_some("Equip Weapon");
+        let quickSelect = Some("Quick Select");
+        let glide = Some("Hold: Glide");
+
+        // Change context controls based on hero states.
+        match (i.group, i.hero_state) {
+            (0 | 1, _)        => [quickSelect, swing, fire_or_equip, Some("Jump")],           // standing, walking
+            (0xc, _)          => [quickSelect, Some("Comet Strike"), fire_or_equip, Some("High Jump")], // crouch + □ = comet strike
+            (4, 0xb)            => [quickSelect, air, fire_or_equip, Some("Long Jump")],                       // jump, running jump
+            (2, _)            => [quickSelect, air, fire_or_equip, glide],                                      // falling
+            (4, 7)            => [quickSelect, air, fire_or_equip, Some("Double Jump")],                       // jump, running jump
+            (4, _)            => [quickSelect, air, fire_or_equip, glide],                                      // other jumps
+            (3, 0x19..=0x1b)  => [quickSelect, None, None, Some("Climb")],                            // ledge hang / shimmy
+            (5, _)            => [quickSelect, air, fire_or_equip, glide],                      // gliding
+            (6, 0x13)         => [quickSelect, Some("Combo"), None, None],                            // wrench combo
+            (0x12, _)         => [quickSelect, None, None, Some("Jump")],                             // treading water
+            _                 => [None; 4],
+        }
+    }
+
+    // Draw the context controls in a diamond shape in bottom left.
+    fn draw_context_controls(&self, out: &mut Vec<Draw>) {
+        // The race HUD owns this corner (slot 5) on levels 5 / 16.
+        if !self.show_context_controls || matches!(self.slots[5].element, Element::RaceLap) { return; }
+        #[derive(Clone, Copy)]
+        enum Side { Above, Left, Right, Below }
+        // (glyph byte, column, row, where its label goes, the widest label that button shows in `pad_hints`).
+        // Keep the probes in step with `pad_hints`: a longer label than its probe would stick out of the panel.
+        const CELLS: [(u8, i32, i32, Side, &str); 4] = [
+            (0x12, 0, 0, Side::Above, "Quick Select"),
+            (0x13, -1, 1, Side::Left, "Comet Strike"),
+            (0x11, 1, 1, Side::Right, "Equip Weapon"),
+            (0x10, 0, 2, Side::Below, "Double Jump"),
+        ];
+        const DX: i32 = 28; // □ / ○ distance from the centre column
+        const DY: i32 = 18; // distance between rows
+        const GAP: i32 = 4; // glyph to label
+        const ON: u32 = 0x80e0_8060;
+        const OFF: u32 = 0x30e0_8060; // the same colour, mostly transparent (the pad icons keep the alpha)
+        // Changed from Regular
+        let gw = |g: u8| self.assets.text_width(Font::Small, &[g]);
+        let lw = |s: &str| self.assets.text_width(Font::Small, s.as_bytes());
+        // Horizontal extent of one cell (its glyph and a label `w` wide) around the centre column at x = 0.
+        let span = |c: &(u8, i32, i32, Side, &str), w: i32| -> (i32, i32) {
+            let x = c.1 * DX;
+            let (gl, gr) = (x - gw(c.0) / 2, x + gw(c.0) / 2);
+            match c.3 {
+                Side::Above | Side::Below => (gl.min(x - w / 2), gr.max(x + w / 2)),
+                Side::Left => (gl - GAP - w, gr),
+                Side::Right => (gl, gr + GAP + w),
+            }
+        };
+        let min_x = CELLS.iter().map(|c| span(c, lw(c.4)).0).min().unwrap_or(0);
+        let max_x = CELLS.iter().map(|c| span(c, lw(c.4)).1).max().unwrap_or(0);
+        let pad = if self.inputs.pal { 10 } else { 0x12 };
+        let bottom = SCREEN_H - (0x14 + pad) + 0x20; // the bottom edge the old bars had
+        // Glyph top of each row: the bottom row has its label (17) and a margin (6) below it.
+        let gy = |row: i32| bottom - 39 - (2 - row) * DY;
+        let left = self.anchor(5).0 - 0x10;
+        let cx = left + 8 - min_x; // x of the centre column
+        out.push(Draw::UiFrame { top: gy(0) - 23, bottom, left, right: cx + max_x + 8, alpha: 0x60 });
+        for (c, hint) in CELLS.iter().zip(self.pad_hints()) {
+            let (g, col, row, side, _) = *c;
+            let (x, y) = (cx + col * DX, gy(row));
+            // changed from Regular
+            out.push(Draw::Text { font: Font::Small, x: x - gw(g) / 2, y, rgba: if hint.is_some() { ON } else { OFF }, text: vec![g] });
+            let Some(label) = hint else { continue };
+            let w = lw(label);
+            let (lx, ly) = match side {
+                Side::Above => (x - w / 2, y - 17),
+                Side::Below => (x - w / 2, y + 17),
+                Side::Left => (x - gw(g) / 2 - GAP - w, y),
+                Side::Right => (x + gw(g) / 2 + GAP, y),
+            };
+            out.push(Draw::Text { font: Font::Small, x: lx + 1, y: ly + 1, rgba: 0x8000_0000, text: label.as_bytes().to_vec() }); // shadow
+            out.push(Draw::Text { font: Font::Small, x: lx, y: ly, rgba: ON, text: label.as_bytes().to_vec() });
+        }
+    }
+
+    // Show context controls.
+    pub fn show_context_controls(&mut self) {
+        if !self.show_context_controls {
+            self.show_context_controls = true;
+        }
+    }
+
+    // Hide context controls.
+    pub fn hide_context_controls(&mut self) {
+        if self.show_context_controls {
+            self.show_context_controls = false;
         }
     }
 
@@ -945,6 +1050,14 @@ impl HudState {
             if i.hp < hp { self.queue_req(Request::HEALTH); }
             if i.bolts != bolts { self.queue_req(Request::BOLTS); }
         }
+        if i.pressed & crate::pad::button::L3 != 0 && crate::pad::button::L1 != 0 { 
+            if !self.show_context_controls{
+                self.show_context_controls(); 
+            }
+            else{
+                self.hide_context_controls();
+            }
+        } 
         self.last = Some((i.hp, i.bolts));
         if i.pressed & crate::pad::button::L3 != 0 && i.hero_state != 0x1d && i.hero_state != crate::hero::scripted::MOUNTED { self.show_health_bolts(scale_ticks(180)); }
         if i.group == 0x11 && !i.o2_mask { self.queue_req(Request::OXYGEN); }
@@ -1212,6 +1325,7 @@ impl HudState {
         }
         self.draw_banner(out);
         self.draw_help(out);
+        self.draw_context_controls(out);
     }
 
     fn fractions(s: &Slot, slide_steps: i32, alpha_steps: i32) -> (f32, f32) {
