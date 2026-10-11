@@ -293,8 +293,10 @@ fn spawn_lauma(
             ),
         ),
         //Transform::from_translation(position),
-        Transform::from_translation(position + Vec3::Y * 3.0)
-        .with_scale(Vec3::splat(10.0)),
+        // Transform::from_translation(position + Vec3::Y * 3.0)
+        // .with_scale(Vec3::splat(10.0)),
+        Transform::from_translation(position)
+        .with_scale(Vec3::splat(1.0)),
     ));
 
     println!("RC_LAUMA=1: loading static GLB at level centre.");
