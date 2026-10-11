@@ -237,7 +237,7 @@ fn main() -> anyhow::Result<()> {
     .add_plugins(flight_render::FlightRenderPlugin)
     .add_plugins(title_world::TitleWorldPlugin)
     //.add_systems(Startup, setup_camera)
-    .add_systems(Startup, (setup_camera, spawn_lauma))
+    .add_systems(Startup, (setup_camera, setup_lauma_lighting))
     .add_systems(level_switch::LevelStartup, setup)
     .add_systems(Update, report_fps);
     // RC_RENDER_DIAG=1: Bevy's per-pass render timings (CPU only on Metal) and the views rendered, logged every 5 s.
@@ -258,48 +258,6 @@ fn main() -> anyhow::Result<()> {
     }
     app.run();
     Ok(())
-}
-
-fn spawn_lauma(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    level: Res<Level>,
-) {
-    if !std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() == "1") {
-        return;
-    }
-
-    let level = &level.0;
-
-    // Estimate the centre of the loaded level.
-    let spheres: Vec<[f32; 4]> = level
-        .tfrags
-        .iter()
-        .map(|t| t.header.bsphere.map(|v| v / 1024.0))
-        .collect();
-
-    let n = spheres.len().max(1) as f32;
-    let centre = spheres.iter().fold(Vec3::ZERO, |acc, s| {
-        acc + Vec3::new(s[0], s[1], s[2])
-    }) / n;
-
-    //let position = game_to_bevy(centre.to_array());
-    let position = game_to_bevy([162.530, 136.393, 60.000]);
-
-    commands.spawn((
-        WorldAssetRoot(
-            asset_server.load(
-                GltfAssetLabel::Scene(0).from_asset("models/lauma.glb"),
-            ),
-        ),
-        //Transform::from_translation(position),
-        // Transform::from_translation(position + Vec3::Y * 3.0)
-        // .with_scale(Vec3::splat(10.0)),
-        Transform::from_translation(position)
-        .with_scale(Vec3::splat(1.0)),
-    ));
-
-    println!("RC_LAUMA=1: loading static GLB at level centre.");
 }
 
 fn ms(d: Duration) -> f64 { d.as_secs_f64() * 1e3 }
@@ -332,6 +290,26 @@ fn setup(
         "tfrags: {} tfrags, {} LOD-0 triangles, {} vertices, {} meshes ({} with the GS alpha-test split), {} images; mesh build {:.1} ms, asset upload {:.1} ms; vertex AABB {:.1?} .. {:.1?}",
         s.tfrags, s.triangles, s.vertices, s.meshes, s.blended_meshes, s.images, ms(s.mesh_build), ms(s.upload), s.min, s.max
     );
+}
+
+/// PBR lighting for Lauma's glTF materials. The original level renderer uses custom PS2-style shaders,
+/// so these lights affect the glTF body without changing the custom-lit level geometry.
+fn setup_lauma_lighting(mut commands: Commands) {
+    commands.insert_resource(GlobalAmbientLight {
+        color: Color::srgb(0.78, 0.82, 1.0),
+        brightness: 180.0,
+        ..default()
+    });
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 9_000.0,
+            shadow_maps_enabled: true,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.75, -0.55, -0.35)),
+        Name::new("Lauma PBR key light"),
+    ));
+    println!("Lauma GLB replacement: enabled PBR key and ambient lighting.");
 }
 
 /// The main world camera, once per process (crate::level_switch keeps it across level changes); framed on the boot

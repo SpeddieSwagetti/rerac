@@ -108,6 +108,7 @@ use crate::moby_spawn::{MobySpawn, SpawnHidden};
 use crate::particle_render::ParticleSim;
 use crate::play_camera::{self, PlayView};
 use bevy::mesh::MeshTag;
+use bevy::world_serialization::WorldAssetRoot;
 use bevy::prelude::*;
 use bevy::render::storage::ShaderBuffer;
 use rc_formats::collision::Collision;
@@ -1103,6 +1104,24 @@ impl DynMobys {
     }
 }
 
+/// Build the glTF body's world transform from the game's moby rows.
+fn lauma_model_transform(rows: [[f32; 3]; 3], scale: f32, position: [f32; 3]) -> Transform {
+    // `axes` converts game-space (X/Y ground, Z up) to Bevy/glTF (Y up). Conjugating the game
+    // rotation by it keeps a Y-up glTF model upright while preserving Ratchet's live heading.
+    let axes = Mat3::from_cols(Vec3::X, Vec3::NEG_Z, Vec3::Y);
+    let game_rotation = Mat3::from_cols(
+        Vec3::from(rows[0]),
+        Vec3::from(rows[1]),
+        Vec3::from(rows[2]),
+    );
+    let rotation = axes * game_rotation * axes.inverse();
+    Transform {
+        translation: crate::tfrag_render::game_to_bevy(position),
+        rotation: Quat::from_mat3(&rotation),
+        scale: Vec3::splat(scale),
+    }
+}
+
 /// The gameplay instances' moby entities (not the attachments).
 type GameplayEntities<'w, 's> = Query<'w, 's, (Entity, &'static MeshTag), (With<MeshMaterial3d<MobyMaterial>>, Without<AttachedTo>)>;
 
@@ -1111,6 +1130,7 @@ fn setup(
     mut done: Local<bool>,
     generation: Res<crate::level_switch::LevelGeneration>,
     mut commands: Commands,
+    asset_server: Res<AssetServer>,
     level: Res<crate::Level>,
     spawn: Option<Res<MobySpawn>>,
     state: Option<Res<Persistent>>,
@@ -1119,9 +1139,9 @@ fn setup(
     mut anim: Option<ResMut<MobyAnim>>,
     mut particles: Option<ResMut<ParticleSim>>,
     gameplay_entities: GameplayEntities,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut images: ResMut<Assets<Image>>,
-    mut materials: ResMut<Assets<MobyMaterial>>,
+    // mut meshes: ResMut<Assets<Mesh>>,
+    // mut images: ResMut<Assets<Image>>,
+    // mut materials: ResMut<Assets<MobyMaterial>>,
     mut buffers: ResMut<Assets<ShaderBuffer>>,
     travel: Option<Res<crate::travel_render::Travel>>,
 ) {
@@ -1408,20 +1428,26 @@ fn setup(
     svc.carry_load_pass_writes(game.counter);
     if let Some(p) = particles.as_mut() { p.external = true; }
 
-    // Ratchet as an extra instance of his class; the gameplay-instance entities are hidden.
+    // The game still owns Ratchet's hero state, collision, animation, equipment and moby transform. Replace only
+    // the rendered body: the GLB scene follows the same runtime matrix as the original extra-moby draw.
     let slots = (class.joint_count as u32).max(ExtraMobys::max_skinned_joint(&m.classes[placed.class]) as u32 + 1).max(1);
-    let mut extra = ExtraMobys::new(lv, vec![0; moby_render::EXTRA_RECORD_SIZE], crate::moby_anim::identity_palette(slots), &mut buffers);
+    let extra = ExtraMobys::new(lv, vec![0; moby_render::EXTRA_RECORD_SIZE], crate::moby_anim::identity_palette(slots), &mut buffers);
     let hm = &game.mobys.mobys[hero_id];
-    let t = Transform::from_matrix(moby_render::extra_model(rows3(&hm.rows), placed.scale, [hm.position[0], hm.position[1], hm.position[2]]));
-    let (ratchet_high, ratchet_metal) = extra.spawn_split(&mut commands, lv, &m.classes[placed.class], 0, t, "Ratchet (play)", &mut meshes, &mut images, &mut materials);
-    let ratchet_low = extra.spawn_low(&mut commands, lv, &m.classes[placed.class], 0, t, "Ratchet (play)", &mut meshes, &mut images, &mut materials);
-    let entities: Vec<Entity> = ratchet_high.iter().chain(&ratchet_metal).chain(&ratchet_low).copied().collect();
-    for &e in &entities { commands.entity(e).insert(RatchetMesh); }
-    // The LOD sets under one parent each (identity transforms): the pick toggles the parents, so the scene / vendor /
-    // travel hides, which set the entities themselves, keep working.
+    let initial_transform = lauma_model_transform(rows3(&hm.rows), placed.scale, [hm.position[0], hm.position[1], hm.position[2]]);
+    let lauma_root = commands.spawn((
+        WorldAssetRoot(asset_server.load(bevy::gltf::GltfAssetLabel::Scene(0).from_asset("models/lauma.glb"))),
+        initial_transform,
+        Visibility::Inherited,
+        RatchetMesh,
+        Name::new("Lauma (play)"),
+    )).id();
+    let ratchet_high = vec![lauma_root];
+    let entities = vec![lauma_root];
+    // Keep the existing high/low visibility parents so cutscenes, travel, vendor and respawn hiding continue to work.
+    // The GLB has one LOD and therefore remains under the high parent for the whole gameplay session.
     let ratchet_lods = [
-        commands.spawn((RatchetLod, Transform::IDENTITY, Visibility::Inherited, Name::new("Ratchet LOD high"))).add_children(&ratchet_high).id(),
-        commands.spawn((RatchetLod, Transform::IDENTITY, Visibility::Hidden, Name::new("Ratchet LOD low"))).add_children(&ratchet_low).id(),
+        commands.spawn((RatchetLod, Transform::IDENTITY, Visibility::Inherited, Name::new("Lauma LOD"))).add_children(&ratchet_high).id(),
+        commands.spawn((RatchetLod, Transform::IDENTITY, Visibility::Hidden, Name::new("Unused Lauma LOD"))).id(),
     ];
     let mut hidden = 0;
     for (e, tag) in &gameplay_entities {
@@ -1502,7 +1528,7 @@ fn setup(
         extra,
         entities,
         ratchet_lods,
-        ratchet_has_low: !ratchet_low.is_empty(),
+        ratchet_has_low: false,
         ratchet_lod_low: false,
         uploaded: None,
         sched,
@@ -2534,10 +2560,13 @@ fn upload(
     for (k, b) in f.iter().take(p.slots as usize).flat_map(|r| r.iter().flatten().flat_map(|v| v.to_le_bytes())).enumerate() { palette[k] = b; }
     let rows = rows_bits(&hm.rows);
     let lights = lv.mobys.lighting.as_ref().map(|l| light::moby_lights(&rows, &l.bank, p.light_word, p.ambient, 0x80));
-    let model = moby_render::extra_model(rows3(&hm.rows), p.scale, [hm.position[0], hm.position[1], hm.position[2]]);
+    let position = [hm.position[0], hm.position[1], hm.position[2]];
+    let rows = rows3(&hm.rows);
+    let model = moby_render::extra_model(rows, p.scale, position);
     let mut record = moby_render::extra_record(&model, lights.as_ref(), 0);
-    moby_render::write_point_light(&mut record, moby_render::point_light_merge(&point_lights.0, sphere_centre(hm), &rows3(&hm.rows)));
-    let t = Transform::from_matrix(model);
+    moby_render::write_point_light(&mut record, moby_render::point_light_merge(&point_lights.0, sphere_centre(hm), &rows));
+    // glTF vertices are in metres with Y-up, unlike the original packed moby vertices (game Z-up, /1024).
+    let t = lauma_model_transform(rows, p.scale, position);
     for &e in &p.entities {
         if let Ok(mut tr) = transforms.get_mut(e) { *tr = t; }
     }
