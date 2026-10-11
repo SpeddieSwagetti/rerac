@@ -333,9 +333,7 @@ fn spawn_lauma(
     asset_server: Res<AssetServer>,
     level: Res<Level>,
 ) {
-    if std::env::var("RC_LAUMA").is_err_and(|_| true)
-        || std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() != "1")
-    {
+    if !std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() == "1") {
         return;
     }
 
