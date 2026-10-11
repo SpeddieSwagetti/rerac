@@ -11,6 +11,7 @@
 //! - `RC_SCREENSHOT_DELAY` seconds to wait before that capture (default 3); with `RC_SCREENSHOT_FRAME`
 //!   the capture is frame-exact instead (crate::determinism) and this wall-clock one is not scheduled
 //! - `RC_CAM`        optional camera override in game coordinates: `eye_x,eye_y,eye_z,target_x,target_y,target_z`
+//! - `RC_LAUMA=1`    load `assets/models/lauma.glb` as a static test model at the level's tfrag-centre
 //! - `RC_GS_ALPHA=0` the previous alpha mapping (one blended draw without Z for any As != 0x80), crate::gs_state
 //! - `RC_FOG_ZONES=0`, `RC_UNDERWATER=1`, `RC_CAM_PATH` fog zones / underwater / camera walk-through, crate::fog_state
 //! - `RC_PLAY=0`, `RC_PLAY_SCRIPT`, `RC_PLAY_TRACE=1` the game tick / scripted pad / per-tick trace, crate::gameplay
@@ -236,7 +237,7 @@ fn main() -> anyhow::Result<()> {
     .add_plugins(travel_render::TravelPlugin)
     .add_plugins(flight_render::FlightRenderPlugin)
     .add_plugins(title_world::TitleWorldPlugin)
-    .add_systems(Startup, setup_camera)
+    .add_systems(Startup, (setup_camera, spawn_lauma))
     .add_systems(level_switch::LevelStartup, setup)
     .add_systems(Update, report_fps);
     // RC_RENDER_DIAG=1: Bevy's per-pass render timings (CPU only on Metal) and the views rendered, logged every 5 s.
@@ -323,6 +324,43 @@ fn setup_camera(mut commands: Commands, level: Res<Level>) {
         transform,
         level_switch::KeepAcrossLevels,
     ));
+}
+
+/// Optional first milestone for custom character mods: load a GLB through Bevy's regular glTF path.
+/// This deliberately does not touch ReRAC's proprietary moby renderer.
+fn spawn_lauma(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    level: Res<Level>,
+) {
+    if std::env::var("RC_LAUMA").is_err_and(|_| true)
+        || std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() != "1")
+    {
+        return;
+    }
+
+    let level = &level.0;
+    let spheres: Vec<[f32; 4]> = level.tfrags.iter().map(|t| t.header.bsphere.map(|v| v / 1024.0)).collect();
+    let n = spheres.len().max(1) as f32;
+    let centre = spheres.iter().fold(Vec3::ZERO, |a, s| a + Vec3::new(s[0], s[1], s[2])) / n;
+    let position = game_to_bevy(centre.to_array());
+
+    commands.spawn((
+        SceneRoot(asset_server.load(
+            GltfAssetLabel::Scene(0).from_asset("models/lauma.glb"),
+        )),
+        Transform::from_translation(position),
+    ));
+    // GLB materials commonly expect conventional PBR lighting, unlike ReRAC's custom world materials.
+    commands.spawn((
+        DirectionalLight {
+            illuminance: 12_000.0,
+            shadows_enabled: false,
+            ..default()
+        },
+        Transform::from_rotation(Quat::from_euler(EulerRot::XYZ, -0.7, -0.5, 0.0)),
+    ));
+    println!("RC_LAUMA=1: loading static GLB at level centre; set RC_LAUMA=0 to disable.");
 }
 
 /// `ex,ey,ez,tx,ty,tz` in game coordinates.
