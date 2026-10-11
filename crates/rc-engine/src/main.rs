@@ -236,7 +236,8 @@ fn main() -> anyhow::Result<()> {
     .add_plugins(travel_render::TravelPlugin)
     .add_plugins(flight_render::FlightRenderPlugin)
     .add_plugins(title_world::TitleWorldPlugin)
-    .add_systems(Startup, setup_camera)
+    //.add_systems(Startup, setup_camera)
+    .add_systems(Startup, (setup_camera, spawn_lauma))
     .add_systems(level_switch::LevelStartup, setup)
     .add_systems(Update, report_fps);
     // RC_RENDER_DIAG=1: Bevy's per-pass render timings (CPU only on Metal) and the views rendered, logged every 5 s.
@@ -257,6 +258,46 @@ fn main() -> anyhow::Result<()> {
     }
     app.run();
     Ok(())
+}
+
+fn spawn_lauma(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    level: Res<Level>,
+) {
+    if !std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() == "1") {
+        return;
+    }
+
+    let level = &level.0;
+
+    // Estimate the centre of the loaded level.
+    let spheres: Vec<[f32; 4]> = level
+        .tfrags
+        .iter()
+        .map(|t| t.header.bsphere.map(|v| v / 1024.0))
+        .collect();
+
+    let n = spheres.len().max(1) as f32;
+    let centre = spheres.iter().fold(Vec3::ZERO, |acc, s| {
+        acc + Vec3::new(s[0], s[1], s[2])
+    }) / n;
+
+    //let position = game_to_bevy(centre.to_array());
+    let position = game_to_bevy([162.530, 136.393, 60.000]);
+
+    commands.spawn((
+        WorldAssetRoot(
+            asset_server.load(
+                GltfAssetLabel::Scene(0).from_asset("models/lauma.glb"),
+            ),
+        ),
+        //Transform::from_translation(position),
+        Transform::from_translation(position + Vec3::Y * 3.0)
+        .with_scale(Vec3::splat(10.0)),
+    ));
+
+    println!("RC_LAUMA=1: loading static GLB at level centre.");
 }
 
 fn ms(d: Duration) -> f64 { d.as_secs_f64() * 1e3 }
