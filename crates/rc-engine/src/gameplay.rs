@@ -1104,21 +1104,37 @@ impl DynMobys {
     }
 }
 
-/// Build the glTF body's world transform from the game's moby rows.
-fn lauma_model_transform(rows: [[f32; 3]; 3], scale: f32, position: [f32; 3]) -> Transform {
-    // `axes` converts game-space (X/Y ground, Z up) to Bevy/glTF (Y up). Conjugating the game
-    // rotation by it keeps a Y-up glTF model upright while preserving Ratchet's live heading.
+
+/// Build Lauma's GLB transform from the game's moby rows.
+fn lauma_model_transform(
+    rows: [[f32; 3]; 3],
+    scale: f32,
+    position: [f32; 3],
+) -> Transform {
+    // Convert game-space axes (Z-up) to glTF/Bevy axes (Y-up).
     let axes = Mat3::from_cols(Vec3::X, Vec3::NEG_Z, Vec3::Y);
+
     let game_rotation = Mat3::from_cols(
         Vec3::from(rows[0]),
         Vec3::from(rows[1]),
         Vec3::from(rows[2]),
     );
+
     let rotation = axes * game_rotation * axes.inverse();
+
+    // The GLB's local forward direction differs from Ratchet's.
+    // Rotate the model 90 degrees around its local Y axis.
+    let forward_correction = Quat::from_rotation_y(
+        std::f32::consts::FRAC_PI_2,
+    );
+
+    // Initial scale correction. Adjust this multiplier after testing in-game.
+    const LAUMA_SCALE_MULTIPLIER: f32 = 10.0;
+
     Transform {
         translation: crate::tfrag_render::game_to_bevy(position),
-        rotation: Quat::from_mat3(&rotation),
-        scale: Vec3::splat(scale),
+        rotation: Quat::from_mat3(&rotation) * forward_correction,
+        scale: Vec3::splat(scale * LAUMA_SCALE_MULTIPLIER),
     }
 }
 
