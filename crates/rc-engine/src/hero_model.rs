@@ -10,9 +10,11 @@
 //! * **Lighting**: her vertices carry the game's packed normals (azimuth / elevation bytes), so `moby.wgsl` lights
 //!   her with the instance's light block like any moby; the per-vertex RGBA multipliers default to 0x80 (1.0).
 //! * **Skinning**: every vertex is skinned to one joint of Ratchet's skeleton (`MobySkin::joint`), so the palette
-//!   path runs and she follows the root joint's motion; she does not deform yet. Mapping her bones onto his joints
-//!   later means filling [`MobySkin`] per vertex in [`build_submesh`], nothing else. `RC_LAUMA_SKIN=static` skins
-//!   to no joint at all (joint count 0: the identity) if the root joint's motion looks wrong.
+//!   path runs and she moves with that joint; she does not deform yet. The joint is the one his back attachment
+//!   list (joint list 5: where Clank and the packs ride) resolves to, so she turns with his body in flips, bobs
+//!   with his run and lowers in his crouch; the root joint stays put in all of them. `RC_LAUMA_SKIN=root` binds to
+//!   the root joint instead, `RC_LAUMA_SKIN=static` to no joint at all (joint count 0: the identity). Mapping her
+//!   bones onto his joints later means filling [`MobySkin`] per vertex in [`build_submesh`], nothing else.
 //! * **Data structure**: one packet of packed `i16` positions (in Ratchet's own class scale, so his animation
 //!   translations still apply), 4.12 ST, the game's triangle list with texture slots 0..15, drawn as the high and
 //!   the low LOD alike (a far hero must not vanish), no metal packets (his chrome would hang in the air) and no
@@ -24,20 +26,30 @@
 //!
 //! Environment: `RC_LAUMA=1` enables; `RC_LAUMA_MODEL=<path>` another file; `RC_LAUMA_SCALE=<f>` (default 1) scales her
 //! relative to the fitted size; `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
-//! model forward is +x; the converter faces her that way); `RC_LAUMA_SKIN=static` as above. With `RC_MOBY_CPU_LIGHT`
-//! the class colours are baked at load before this runs, so Ratchet stays.
+//! model forward is +x; the converter faces her that way); `RC_LAUMA_SKIN=back|root|static` as above (default `back`).
+//! With `RC_MOBY_CPU_LIGHT` the class colours are baked at load before this runs, so Ratchet stays.
+//!
+//! `RC_LAUMA_DUMP=1` (with or without `RC_LAUMA`) writes `lauma_dump.txt` into the working directory once per
+//! process: Ratchet's skeleton as the class data has it (the hierarchy, each joint's position in the rest pose, where
+//! his own mesh weights put each joint, every joint list with its chain, every sequence's frame count). It is what
+//! reshaping his skeleton to her proportions needs, and it only reads.
 
 use crate::moby_render::LevelMobys;
 use anyhow::{ensure, Context, Result};
-use rc_formats::gadget::RATCHET_O_CLASS;
-use rc_formats::level::TextureEntry;
+use rc_formats::gadget::{self, RATCHET_O_CLASS};
+use rc_formats::level::{LevelCore, TextureEntry};
 use rc_formats::moby::{MobySkin, MobySubmesh, MobyTriangle, MobyVertex, MobyVertexKind};
 use rc_formats::texture::{LevelTexture, Texture, TextureSource, TextureTable};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::OnceLock;
 
-/// The joint every vertex is skinned to until her bones are mapped: Ratchet's root.
+/// Ratchet's root joint (`RC_LAUMA_SKIN=root`, and the fallback when the back joint cannot be read).
 const ROOT_JOINT: u8 = 0;
+
+/// The joint list the back items hang on (Clank, the packs: docs/formats/moby_rac1.md, `moby_attach`): its attachment
+/// joint is part of Ratchet's body in every animation, so a vertex skinned to it moves with his flips, run and crouch.
+const BACK_LIST: usize = 5;
 
 /// The converted model (`tools/lauma_convert.py`): game axes (x forward, y left, z up), metres, her own size.
 struct Asset {
@@ -119,6 +131,96 @@ pub fn enabled() -> bool { std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() == "
 
 fn env_f32(name: &str, default: f32) -> f32 { std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default) }
 
+/// `RC_LAUMA_DUMP=1`.
+fn dump_requested() -> bool { std::env::var("RC_LAUMA_DUMP").is_ok_and(|v| v.trim() == "1") }
+
+/// Ratchet's class block (the joint lists live in it) in the level's core data.
+fn ratchet_blob<'a>(core: &LevelCore, core_data: &'a [u8]) -> Option<&'a [u8]> {
+    let blk = core.blocks.iter().find(|b| b.name == "moby_class/0000")?;
+    core_data.get(blk.offset..blk.offset + blk.size)
+}
+
+/// Ratchet's skeleton as text (`lauma_dump.txt`): one line per joint with its parent, its rest-pose position (the sum of
+/// the rest translations up the chain, in metres), the translation row of its inverse bind matrix (metres, for the
+/// cross-check), how much of his own mesh's skin weight it carries and where that weight is centred; then every joint
+/// list (the root-to-joint chain and the second byte list) and every sequence's frame count.
+fn dump_ratchet(blob: Option<&[u8]>, mobys: &LevelMobys, ci: usize, back: Option<u8>) -> Result<String> {
+    use std::fmt::Write as _;
+    let (lc, anim) = (&mobys.classes[ci], &mobys.anim[ci]);
+    let unit = lc.class.header.scale / 1024.0;
+    let n = anim.joint_count;
+    let mut mass = vec![0.0f32; n];
+    let mut sum = vec![[0.0f32; 3]; n];
+    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+    for v in lc.class.high_lod.iter().flat_map(|s| &s.vertices) {
+        let p = [v.x as f32 * unit, v.y as f32 * unit, v.z as f32 * unit];
+        for a in 0..3 {
+            lo[a] = lo[a].min(p[a]);
+            hi[a] = hi[a].max(p[a]);
+        }
+        for k in 0..(v.skin.count as usize).min(3) {
+            let (j, w) = (v.skin.joints[k] as usize, v.skin.weights[k] as f32 / 256.0);
+            if j < n {
+                mass[j] += w;
+                for a in 0..3 {
+                    sum[j][a] += w * p[a];
+                }
+            }
+        }
+    }
+    let rest_position = |j: usize| -> [f32; 3] {
+        let mut p = [0.0f32; 3];
+        let mut at = Some(j);
+        for _ in 0..64 {
+            let Some(k) = at else { break };
+            if k >= n {
+                break;
+            }
+            for a in 0..3 {
+                p[a] += anim.rest[k][a] * unit;
+            }
+            at = anim.parent(k);
+        }
+        p
+    };
+    let mut s = String::new();
+    writeln!(
+        s,
+        "# Ratchet class {RATCHET_O_CLASS} (RC_LAUMA_DUMP): {n} joints, class scale {:.4} (1 packed unit = {:.6} m), low-LOD joint count {}",
+        lc.class.header.scale, unit, lc.class.header.low_lod_joint_count
+    )?;
+    writeln!(s, "# bind-pose box (m): x {:.3}..{:.3}  y {:.3}..{:.3}  z {:.3}..{:.3}", lo[0], hi[0], lo[1], hi[1], lo[2], hi[2])?;
+    writeln!(s, "# back attachment joint (joint list {BACK_LIST}): {back:?}")?;
+    writeln!(s, "# joint parent | rest position x y z | inverse-bind row 3 x y z | skin weight mass | weighted centroid x y z")?;
+    for j in 0..n {
+        let p = rest_position(j);
+        let t = anim.skeleton[j][3];
+        let m = mass[j];
+        let c = if m > 0.0 { [sum[j][0] / m, sum[j][1] / m, sum[j][2] / m] } else { [0.0; 3] };
+        let parent = anim.parent(j).map_or("-".to_string(), |q| q.to_string());
+        writeln!(
+            s,
+            "{j:3} {parent:>4} | {:+.3} {:+.3} {:+.3} | {:+.3} {:+.3} {:+.3} | {m:7.2} | {:+.3} {:+.3} {:+.3}",
+            p[0], p[1], p[2], t[0] * unit, t[1] * unit, t[2] * unit, c[0], c[1], c[2]
+        )?;
+    }
+    if let Some(b) = blob {
+        writeln!(s, "# joint lists: chain (root to the attachment joint) | second byte list")?;
+        for l in 0..64 {
+            if let Ok((chain, second)) = gadget::joint_list(b, &lc.class.header, l) {
+                writeln!(s, "list {l:2}: {chain:?} | {second:?}")?;
+            }
+        }
+    }
+    writeln!(s, "# sequences (index: frame count)")?;
+    for (i, q) in anim.sequences.iter().enumerate() {
+        if let Some(q) = q {
+            writeln!(s, "seq {i:3}: {} frames", q.header.frame_count)?;
+        }
+    }
+    Ok(s)
+}
+
 /// The packed normal (azimuth, elevation) the game stores: `x = cos a cos e, y = sin a cos e, z = sin e`, both angles
 /// in 2pi/256 steps (`rc_formats::moby::moby_normal` is the inverse).
 fn normal_bytes(n: [f32; 3]) -> (u8, u8) {
@@ -190,7 +292,26 @@ fn build_submesh(a: &Asset, fit: &Fit, inv: f32, skin: MobySkin) -> (MobySubmesh
 /// Replaces Ratchet's class 0 with Lauma when `RC_LAUMA=1`: her textures are appended to the moby texture table (the
 /// next free indices, like `moby_spawn::load_spaceship`), the class keeps Ratchet's header, skeleton and sequences and
 /// gets her packet as both LODs. Nothing is changed unless every step succeeds. Levels without a class 0 are left alone.
-pub fn inject(textures: &mut Vec<LevelTexture>, mobys: &mut LevelMobys) -> Result<()> {
+pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTexture>, mobys: &mut LevelMobys) -> Result<()> {
+    let dump = dump_requested();
+    if !enabled() && !dump {
+        return Ok(());
+    }
+    let Some(ci) = mobys.classes.iter().position(|c| c.o_class == RATCHET_O_CLASS) else { return Ok(()) };
+    let blob = ratchet_blob(core, core_data);
+    let back = blob.and_then(|b| gadget::attachment_joint(b, &mobys.classes[ci].class.header, BACK_LIST).ok());
+    if dump {
+        static DUMPED: AtomicBool = AtomicBool::new(false);
+        if !DUMPED.swap(true, Ordering::Relaxed) {
+            match dump_ratchet(blob, mobys, ci, back) {
+                Ok(text) => match std::fs::write("lauma_dump.txt", &text) {
+                    Ok(()) => println!("hero model: wrote Ratchet's skeleton ({} joints) to lauma_dump.txt", mobys.anim[ci].joint_count),
+                    Err(e) => eprintln!("hero model: lauma_dump.txt: {e}"),
+                },
+                Err(e) => eprintln!("hero model: the skeleton dump failed: {e:#}"),
+            }
+        }
+    }
     if !enabled() {
         return Ok(());
     }
@@ -199,7 +320,6 @@ pub fn inject(textures: &mut Vec<LevelTexture>, mobys: &mut LevelMobys) -> Resul
         return Ok(());
     }
     let Some(asset) = asset() else { return Ok(()) };
-    let Some(ci) = mobys.classes.iter().position(|c| c.o_class == RATCHET_O_CLASS) else { return Ok(()) };
 
     // The moby table indices after the level's own (slot value 0xff means unused).
     let first = textures.iter().filter(|t| t.table == TextureTable::Moby).map(|t| t.index + 1).max().unwrap_or(0);
@@ -224,7 +344,17 @@ pub fn inject(textures: &mut Vec<LevelTexture>, mobys: &mut LevelMobys) -> Resul
     let (sin, cos) = env_f32("RC_LAUMA_YAW", 0.0).to_radians().sin_cos();
     let fit = Fit { cos, sin, scale, dz: zmin - lmin * scale };
 
-    let skin = if std::env::var("RC_LAUMA_SKIN").is_ok_and(|v| v.trim() == "static") { MobySkin::default() } else { MobySkin::joint(ROOT_JOINT) };
+    let (skin, skin_note) = match std::env::var("RC_LAUMA_SKIN").unwrap_or_default().trim() {
+        "static" => (MobySkin::default(), "no joint (static)".to_string()),
+        "root" => (MobySkin::joint(ROOT_JOINT), format!("the root joint {ROOT_JOINT}")),
+        _ => match back {
+            Some(j) => (MobySkin::joint(j), format!("the back joint {j} (joint list {BACK_LIST})")),
+            None => {
+                eprintln!("hero model: joint list {BACK_LIST} could not be read; skinning to the root joint");
+                (MobySkin::joint(ROOT_JOINT), format!("the root joint {ROOT_JOINT} (fallback)"))
+            }
+        },
+    };
     let (sub, clamped) = build_submesh(asset, &fit, 1.0 / unit, skin);
 
     let mut slots = [0xffu8; 16];
@@ -250,7 +380,7 @@ pub fn inject(textures: &mut Vec<LevelTexture>, mobys: &mut LevelMobys) -> Resul
 
     println!(
         "hero model: Lauma replaces class {RATCHET_O_CLASS}: {} vertices, {} triangles, {} textures (moby table {first}..{}); Ratchet is {:.2} tall at scale {:.4}, \
-         she is scaled by {scale:.3}{}",
+         she is scaled by {scale:.3}, skinned to {skin_note}{}",
         asset.pos.len(),
         asset.tris.len(),
         asset.textures.len(),

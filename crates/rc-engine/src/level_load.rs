@@ -149,7 +149,7 @@ pub fn load_level(root: &Path, index: u32) -> Result<LoadedLevel> {
     let mut mobys = crate::moby_render::load_mobys(root, &core, &core_data, &gameplay, collision.as_ref()).context("loading mobys")?;
     // `RC_LAUMA=1`: Lauma in place of Ratchet's class 0, with her textures in the moby table (crate::hero_model). A
     // failure leaves Ratchet; the level still loads.
-    if let Err(e) = crate::hero_model::inject(&mut textures, &mut mobys) {
+    if let Err(e) = crate::hero_model::inject(&core, &core_data, &mut textures, &mut mobys) {
         eprintln!("hero model: {e:#}; Ratchet stays");
     }
     let ties = crate::tie_render::load_ties(&core, &core_data, &gs_ram, &gameplay, &textures).context("loading ties")?;
