@@ -824,6 +824,7 @@ fn pose_actors(rt: &mut SceneRuntime, player: &ScenePlayer, out: &SceneTick, lev
             // FUN_00259288: the slot is re-pointed at this chunk's sequence.
             if let Some(q) = Arc::make_mut(&mut a.anim).sequences.get_mut(a.slot as usize) {
                 *q = Some(scene.chunks[pose.chunk].actors[pose.actor].sequence.clone());
+                crate::hero_model::retarget_scene_sequence(a.o_class, q);
             }
             a.chunk = Some(pose.chunk);
         }

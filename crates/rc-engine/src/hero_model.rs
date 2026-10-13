@@ -32,10 +32,12 @@
 //! and alpha already in the form the engine takes). Her size is fitted to Ratchet's: his bind-pose height from his own
 //! packets, feet on his feet.
 //!
-//! Environment: `RC_LAUMA=1` enables; `RC_LAUMA_MODEL=<path>` another file; `RC_LAUMA_SCALE=<f>` (default 1) scales her
-//! relative to the fitted size; `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
+//! Environment: `RC_LAUMA=1` enables; `RC_LAUMA_MODEL=<path>` another file; `RC_LAUMA_SCALE=<f>` (default [`LAUMA_SCALE`], 0.25 to
+//! 2.5) scales her relative to the fitted size (1 = Ratchet's own height); `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
 //! model forward is +x; the converter faces her that way); `RC_LAUMA_SKIN=rig|back|root|static` as above (default
-//! `rig` for a version 2 model, `back` for version 1).
+//! `rig` for a version 2 model, `back` for version 1). `RC_LAUMA_BOB=<f>` (default [`LAUMA_BOB`]) scales the pelvis and
+//! root translation keys' motion (the bob of a walk or run, the dip of a landing) and `RC_LAUMA_SQUASH=<f>` (default
+//! [`LAUMA_SQUASH`]) how much of his squash and stretch scale keys she takes: 1 is his full motion, 0 none.
 //! With `RC_MOBY_CPU_LIGHT` the class colours are baked at load before this runs, so Ratchet stays.
 //!
 //! `RC_LAUMA_DUMP=1` (with or without `RC_LAUMA`) writes `lauma_dump.txt` into the working directory once per
@@ -52,7 +54,7 @@ use rc_formats::moby_anim::{MobyAnimClass, MobySequence};
 use rc_formats::texture::{LevelTexture, Texture, TextureSource, TextureTable};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 /// Ratchet's root joint (`RC_LAUMA_SKIN=root`, and the fallback when the back joint cannot be read).
 const ROOT_JOINT: u8 = 0;
@@ -171,6 +173,15 @@ fn asset() -> Option<&'static Asset> {
 
 /// `RC_LAUMA=1`.
 pub fn enabled() -> bool { std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() == "1") }
+
+/// How large she is relative to Ratchet's height when `RC_LAUMA_SCALE` is not set. At 1 she is his height with her
+/// headdress; 1.75 reads well on screen. The packed positions hold up to about 2.5 (the converter's clamp count says
+/// when they do not).
+const LAUMA_SCALE: f32 = 1.75;
+/// Share of his pelvis / root translation motion she keeps by default (his bob is tuned for a body a third the height).
+const LAUMA_BOB: f32 = 0.6;
+/// Share of his squash and stretch she keeps by default.
+const LAUMA_SQUASH: f32 = 0.4;
 
 fn env_f32(name: &str, default: f32) -> f32 { std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default) }
 
@@ -338,6 +349,7 @@ fn build_submesh(a: &Asset, fit: &Fit, inv: f32, skin_of: &dyn Fn(usize) -> Moby
 }
 
 /// The new skeleton, worked out before anything is changed (so a bad model leaves Ratchet whole).
+#[derive(Clone)]
 struct SkeletonPlan {
     /// New rest local translations, packed units.
     rest: Vec<[f32; 3]>,
@@ -347,7 +359,13 @@ struct SkeletonPlan {
     shift: Vec<[f32; 3]>,
     /// Scale of a translation key's offset from the rest translation, per joint: her segment over his.
     ratio: Vec<f32>,
+    /// Share of his squash and stretch scale keys kept (1: all of it).
+    squash: f32,
 }
+
+/// The plan in force, for the sequences that arrive after the load (the cutscene player swaps its own streamed
+/// sequences into the actor's class animation: [`retarget_scene_sequence`]).
+static PLAN: Mutex<Option<SkeletonPlan>> = Mutex::new(None);
 
 fn length(v: [f32; 3]) -> f32 { (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() }
 
@@ -374,7 +392,7 @@ fn world_positions(anim: &MobyAnimClass, rest: &[[f32; 3]]) -> Vec<[f32; 3]> {
 
 /// Moves Ratchet's joints to `joints` (her T pose, the model's frame) through the same fit as the mesh. The root stays
 /// where it is (the floor under the instance), and a joint with no parent stays too.
-fn skeleton_plan(anim: &MobyAnimClass, joints: &[[f32; 3]], fit: &Fit, unit: f32) -> Result<SkeletonPlan> {
+fn skeleton_plan(anim: &MobyAnimClass, joints: &[[f32; 3]], fit: &Fit, unit: f32, bob: f32, squash: f32) -> Result<SkeletonPlan> {
     let n = anim.joint_count;
     ensure!(joints.len() == n && anim.rest.len() == n && anim.skeleton.len() == n, "the model's rig has {} joints, Ratchet has {n}", joints.len());
     let old_world = world_positions(anim, &anim.rest);
@@ -406,8 +424,11 @@ fn skeleton_plan(anim: &MobyAnimClass, joints: &[[f32; 3]], fit: &Fit, unit: f32
         .collect();
     if n > 1 {
         ratio[0] = ratio[1];
+        // The bob of a walk, run or landing is the pelvis and root translation moving off the rest height.
+        ratio[0] *= bob;
+        ratio[1] *= bob;
     }
-    Ok(SkeletonPlan { rest, old_rest: anim.rest.clone(), shift, ratio })
+    Ok(SkeletonPlan { rest, old_rest: anim.rest.clone(), shift, ratio, squash })
 }
 
 /// The inverse bind matrix of a joint that moved by `d` (packed units): its translation row is `-b * R` for the bind
@@ -429,8 +450,17 @@ fn rescale_key(plan: &SkeletonPlan, j: usize, key: [i16; 3]) -> [i16; 3] {
     })
 }
 
-/// Re-anchors every translation key of the sequences ([`rescale_key`]), in the frame's records and in the payload bytes
-/// the chain evaluation reads. Returns the records changed.
+/// A scale key (4.12) pulled toward 1 by `1 - k`: his squash and stretch, softened. Keys far from 1 (0.4 to 2.5 is the
+/// band) are not squash but a joint hidden or enlarged on purpose and stay as they are.
+fn soften_scale(s: [u16; 3], k: f32) -> [u16; 3] {
+    if s.iter().any(|&c| !(0.4..=2.5).contains(&(c as f32 / 4096.0))) {
+        return s;
+    }
+    s.map(|c| (4096.0 + (c as f32 - 4096.0) * k).round().clamp(0.0, 65535.0) as u16)
+}
+
+/// Re-anchors every translation key of the sequences ([`rescale_key`]) and softens the scale keys ([`soften_scale`]),
+/// in the frame's records and in the payload bytes the chain evaluation reads. Returns the translation records changed.
 fn rescale_translation_keys(seqs: &mut [Option<MobySequence>], plan: &SkeletonPlan) -> usize {
     let n = plan.rest.len();
     let mut changed = 0;
@@ -452,9 +482,34 @@ fn rescale_translation_keys(seqs: &mut [Option<MobySequence>], plan: &SkeletonPl
                 }
                 changed += 1;
             }
+            if plan.squash < 1.0 {
+                let qb = f.header.quat_bytes as usize;
+                for (i, r) in f.scales.iter_mut().enumerate() {
+                    r.scale = soften_scale(r.scale, plan.squash);
+                    let o = qb + 8 * i;
+                    if o + 6 <= f.payload.len() {
+                        for a in 0..3 {
+                            f.payload[o + 2 * a..o + 2 * a + 2].copy_from_slice(&r.scale[a].to_le_bytes());
+                        }
+                    }
+                }
+            }
         }
     }
     changed
+}
+
+/// A sequence the cutscene player streams into an actor's slot (its own frames, never part of the level's class data):
+/// Ratchet's keys in it get the same treatment as his own sequences, or his neck and pelvis offsets would return in
+/// every cutscene. Other classes are left alone.
+pub(crate) fn retarget_scene_sequence(o_class: i32, seq: &mut Option<MobySequence>) {
+    if o_class != RATCHET_O_CLASS {
+        return;
+    }
+    let guard = PLAN.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(plan) = guard.as_ref() {
+        rescale_translation_keys(std::slice::from_mut(seq), plan);
+    }
 }
 
 /// Writes the plan into class `ci` (the engine's animation data and the class header's skeleton) and into the
@@ -535,7 +590,12 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     }
     let (lmin, lmax) = asset.pos.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[2]), hi.max(p[2])));
     ensure!(lmax > lmin, "the model has no height");
-    let scale = (zmax - zmin) / (lmax - lmin) * env_f32("RC_LAUMA_SCALE", 1.0);
+    let asked = env_f32("RC_LAUMA_SCALE", LAUMA_SCALE);
+    let relative = if asked.is_finite() { asked.clamp(0.25, 2.5) } else { LAUMA_SCALE };
+    if relative != asked {
+        eprintln!("hero model: RC_LAUMA_SCALE={asked} is outside 0.25..2.5; using {relative}");
+    }
+    let scale = (zmax - zmin) / (lmax - lmin) * relative;
     let (sin, cos) = env_f32("RC_LAUMA_YAW", 0.0).to_radians().sin_cos();
     let fit = Fit { cos, sin, scale, dz: zmin - lmin * scale };
 
@@ -560,7 +620,11 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     let (sub, clamped) = build_submesh(asset, &fit, 1.0 / unit, &skin_of);
     // His skeleton in her proportions, checked before anything changes.
     let plan = match rig {
-        Some(r) => Some(skeleton_plan(&mobys.anim[ci], &r.joints, &fit, unit)?),
+        Some(r) => {
+            let bob = env_f32("RC_LAUMA_BOB", LAUMA_BOB).clamp(0.0, 2.0);
+            let squash = env_f32("RC_LAUMA_SQUASH", LAUMA_SQUASH).clamp(0.0, 1.0);
+            Some(skeleton_plan(&mobys.anim[ci], &r.joints, &fit, unit, if bob.is_finite() { bob } else { LAUMA_BOB }, if squash.is_finite() { squash } else { LAUMA_SQUASH })?)
+        }
         None => None,
     };
 
@@ -585,6 +649,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     lc.class.header.rac1_byte_a = 0xff;
     lc.class.header.rac1_byte_b = 0xff;
     let reshaped = plan.as_ref().map(|p| apply_skeleton(mobys, ci, p));
+    *PLAN.lock().unwrap_or_else(|e| e.into_inner()) = plan.clone();
 
     println!(
         "hero model: Lauma replaces class {RATCHET_O_CLASS}: {} vertices, {} triangles, {} textures (moby table {first}..{}); Ratchet is {:.2} tall at scale {:.4}, \
@@ -711,7 +776,7 @@ mod tests {
         };
         let fit = Fit { cos: 1.0, sin: 0.0, scale: 0.5, dz: 0.0 };
         // unit 0.5 m (exact in binary): the model's joints at 0, 4 and 6 m land at 4 and 6 units.
-        let plan = skeleton_plan(&anim, &[[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 6.0]], &fit, 0.5).unwrap();
+        let plan = skeleton_plan(&anim, &[[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 6.0]], &fit, 0.5, 1.0, 1.0).unwrap();
         assert_eq!(plan.rest, vec![[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 2.0]]);
         assert_eq!(plan.shift[1], [0.0, 0.0, 2.0]);
         assert_eq!(plan.shift[2], [0.0, 0.0, 3.0]);
@@ -722,7 +787,31 @@ mod tests {
         // a key of joint 2 sitting 10 units above its rest: 20 above the new rest
         assert_eq!(rescale_key(&plan, 2, [0, 0, 11]), [0, 0, 22]);
         assert_eq!(rescale_key(&plan, 2, [0, 0, 1]), [0, 0, 2], "the rest translation maps to the new one");
-        assert!(skeleton_plan(&anim, &[[0.0; 3]; 2], &fit, 0.5).is_err(), "joint count mismatch");
+        assert!(skeleton_plan(&anim, &[[0.0; 3]; 2], &fit, 0.5, 1.0, 1.0).is_err(), "joint count mismatch");
+    }
+
+    /// The bob factor scales the pelvis and root keys only; squash keys are pulled toward 1 unless they are far from it.
+    #[test]
+    fn bob_and_squash_are_softened() {
+        use rc_formats::moby_anim::IDENTITY;
+        let mut skeleton = vec![IDENTITY; 3];
+        for (j, z) in [0.0f32, 2.0, 3.0].into_iter().enumerate() {
+            skeleton[j][3] = [0.0, 0.0, -z, 1.0];
+        }
+        let anim = MobyAnimClass {
+            joint_count: 3,
+            skeleton,
+            rest: vec![[0.0; 3], [0.0, 0.0, 2.0], [0.0, 0.0, 1.0]],
+            parent_word: vec![0, 0x7000_0000, 0x7000_0040],
+            sequences: Vec::new(),
+        };
+        let fit = Fit { cos: 1.0, sin: 0.0, scale: 0.5, dz: 0.0 };
+        let plan = skeleton_plan(&anim, &[[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 6.0]], &fit, 0.5, 0.5, 0.5).unwrap();
+        assert_eq!(plan.ratio, vec![1.0, 1.0, 2.0], "pelvis and root halved, the limb joint not");
+        assert_eq!(soften_scale([0x1000, 0x1000, 0x0cd6], 0.5), [0x1000, 0x1000, 0x0e6b], "a squash halves toward 1");
+        assert_eq!(soften_scale([0x1000, 0x1000, 0x1000], 0.0), [0x1000; 3]);
+        assert_eq!(soften_scale([0, 0x1000, 0x1000], 0.5), [0, 0x1000, 0x1000], "a hidden joint stays hidden");
+        assert_eq!(soften_scale([0x4000, 0x1000, 0x1000], 0.5), [0x4000, 0x1000, 0x1000], "a big joint stays big");
     }
 
     /// With a rotated bind frame the translation row moves by `-d * R`, not `-d`.
