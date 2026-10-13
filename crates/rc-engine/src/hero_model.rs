@@ -33,10 +33,10 @@
 //! packets, feet on his feet.
 //!
 //! Environment: `RC_LAUMA=1` enables; `RC_LAUMA_MODEL=<path>` another file; `RC_LAUMA_SCALE=<f>` (default 1) scales her relative to
-//! her baseline size, [`LAUMA_BASE`] times Ratchet's height (1 is the size she should be; up to about 1.4 holds); `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
+//! her baseline size, [`LAUMA_BASE`] times Ratchet's height (1 = Ratchet's height; up to about 2.5 holds, but cutscenes are placed for his height); `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
 //! model forward is +x; the converter faces her that way); `RC_LAUMA_SKIN=rig|back|root|static` as above (default
-//! `rig` for a version 2 model, `back` for version 1). `RC_LAUMA_BOB=<f>` (default [`LAUMA_BOB`]) scales the pelvis and
-//! root translation keys' motion (the bob of a walk or run, the dip of a landing) and `RC_LAUMA_SQUASH=<f>` (default
+//! `rig` for a version 2 model, `back` for version 1). `RC_LAUMA_BOB=<f>` (default [`LAUMA_BOB`]) scales the pelvis's small
+//! translation motion (the bob of a walk or run; big moves keep their size, scaled to her legs) and `RC_LAUMA_SQUASH=<f>` (default
 //! [`LAUMA_SQUASH`]) how much of his squash and stretch scale keys she takes: 1 is his full motion, 0 none.
 //! With `RC_MOBY_CPU_LIGHT` the class colours are baked at load before this runs, so Ratchet stays.
 //!
@@ -174,12 +174,17 @@ fn asset() -> Option<&'static Asset> {
 /// `RC_LAUMA=1`.
 pub fn enabled() -> bool { std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() == "1") }
 
-/// Her baseline size in Ratchet's heights (headdress included): what `RC_LAUMA_SCALE=1` means. 1 was too small on screen.
+/// Her baseline size in Ratchet's heights (headdress included): what `RC_LAUMA_SCALE=1` means. Larger sizes broke the
+/// cutscenes (their actors are placed for his height), so the baseline is his own height and a bigger one is opt-in.
 const LAUMA_BASE: f32 = 1.0;
 /// The largest total size (in his heights) the packed positions hold, with a margin.
 const LAUMA_MAX: f32 = 2.5;
-/// Share of his pelvis / root translation motion she keeps by default (his bob is tuned for a body a third the height).
+/// Share of the pelvis's small translation motion she keeps by default (his bob of a walk or run). Motion beyond
+/// [`BOB_KNEE`] (a crouch, sitting, a landing's dip) is not softened: her legs shorten by their own ratio there and the
+/// pelvis has to follow them or her feet leave the ground.
 const LAUMA_BOB: f32 = 0.6;
+/// How far the pelvis may move off its rest height, in metres (his), before the bob factor stops applying.
+const BOB_KNEE: f32 = 0.04;
 /// Share of his squash and stretch she keeps by default.
 const LAUMA_SQUASH: f32 = 0.4;
 
@@ -361,6 +366,9 @@ struct SkeletonPlan {
     ratio: Vec<f32>,
     /// Share of his squash and stretch scale keys kept (1: all of it).
     squash: f32,
+    /// Share of the pelvis's motion kept within `knee` of its rest (1: all of it), and the knee, packed units.
+    bob: f32,
+    knee: f32,
 }
 
 /// The plan in force, for the sequences that arrive after the load (the cutscene player swaps its own streamed
@@ -422,13 +430,10 @@ fn skeleton_plan(anim: &MobyAnimClass, joints: &[[f32; 3]], fit: &Fit, unit: f32
             if old > min_len { (length(rest[j]) / old).clamp(0.25, 4.0) } else { 1.0 }
         })
         .collect();
-    if n > 1 {
-        ratio[0] = ratio[1];
-        // The bob of a walk, run or landing is the pelvis and root translation moving off the rest height.
-        ratio[0] *= bob;
-        ratio[1] *= bob;
-    }
-    Ok(SkeletonPlan { rest, old_rest: anim.rest.clone(), shift, ratio, squash })
+    // The root's keys are the world motion of the actor (travel, stairs, a ramp in a cutscene), not a body proportion:
+    // they stay as they are. (Scaling them sank her into slopes and slid her along them.)
+    ratio[0] = 1.0;
+    Ok(SkeletonPlan { rest, old_rest: anim.rest.clone(), shift, ratio, squash, bob, knee: BOB_KNEE / unit })
 }
 
 /// The inverse bind matrix of a joint that moved by `d` (packed units): its translation row is `-b * R` for the bind
@@ -441,11 +446,22 @@ fn shift_inverse_bind(m: &mut [[f32; 4]; 4], d: [f32; 3]) {
     }
 }
 
+/// The pelvis's offset from its rest, softened: within `knee` it is multiplied by `bob`, beyond it the extra is kept in
+/// full (continuous at the knee). A walk's bob is small and gets calmer; a crouch is large and keeps its depth.
+fn soft_bob(off: f32, bob: f32, knee: f32) -> f32 {
+    let a = off.abs();
+    if a <= knee { off * bob } else { off.signum() * (knee * bob + (a - knee)) }
+}
+
 /// One translation key of joint `j` re-anchored: a key replaces the joint's rest translation, so the new key is
 /// `rest' + ratio * (key - rest)` (her rest, plus his offset from his rest scaled by her segment over his).
 fn rescale_key(plan: &SkeletonPlan, j: usize, key: [i16; 3]) -> [i16; 3] {
     std::array::from_fn(|a| {
-        let v = plan.rest[j][a] + plan.ratio[j] * (key[a] as f32 - plan.old_rest[j][a]);
+        let mut off = key[a] as f32 - plan.old_rest[j][a];
+        if j == 1 {
+            off = soft_bob(off, plan.bob, plan.knee);
+        }
+        let v = plan.rest[j][a] + plan.ratio[j] * off;
         v.round().clamp(-32768.0, 32767.0) as i16
     })
 }
@@ -501,7 +517,7 @@ fn rescale_translation_keys(seqs: &mut [Option<MobySequence>], plan: &SkeletonPl
 
 /// The floor guard ([`FloorGuard`]): up to eight points per foot, the lowest vertex of each slice of the foot along its
 /// length, among the vertices whose strongest joint is one of the ankle, foot, ball or toe joints.
-fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, floor: f32, max_lift: f32, anim: &MobyAnimClass) -> Option<FloorGuard> {
+fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, floor: f32, max_lift: f32, pull_band: f32, anim: &MobyAnimClass) -> Option<FloorGuard> {
     const FEET: [u8; 8] = [94, 95, 96, 97, 100, 101, 102, 103];
     const BINS: usize = 8;
     let mut points = Vec::new();
@@ -537,7 +553,7 @@ fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, floor: f32, m
     if points.is_empty() || anim.rest.len() < 2 {
         return None;
     }
-    Some(FloorGuard { joint_count: anim.joint_count, rest1: anim.rest[1].map(f32::to_bits), points, floor: floor / unit, max_lift: max_lift / unit })
+    Some(FloorGuard { joint_count: anim.joint_count, rest1: anim.rest[1].map(f32::to_bits), points, floor: floor / unit, max_lift: max_lift / unit, pull_band: pull_band / unit })
 }
 
 /// A sequence the cutscene player streams into an actor's slot (its own frames, never part of the level's class data):
@@ -699,7 +715,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     // Her legs are longer than his and his foot angles were made for his feet: keep her soles on the ground in every
     // pose (RC_LAUMA_FLOOR=0 turns it off).
     let guard = match (rig, env_f32("RC_LAUMA_FLOOR", 1.0) > 0.5) {
-        (Some(r), true) => floor_guard(asset, r, &fit, unit, zmin, 0.12 * total, &mobys.anim[ci]),
+        (Some(r), true) => floor_guard(asset, r, &fit, unit, zmin, 0.20 * total, 0.10 * total, &mobys.anim[ci]),
         _ => None,
     };
     let guarded = guard.as_ref().map_or(0, |g| g.points.len());
@@ -834,7 +850,7 @@ mod tests {
         assert_eq!(plan.rest, vec![[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 2.0]]);
         assert_eq!(plan.shift[1], [0.0, 0.0, 2.0]);
         assert_eq!(plan.shift[2], [0.0, 0.0, 3.0]);
-        assert_eq!(plan.ratio, vec![2.0, 2.0, 2.0]);
+        assert_eq!(plan.ratio, vec![1.0, 2.0, 2.0], "the root's keys are world motion: unscaled");
         let mut m = anim.skeleton[2];
         shift_inverse_bind(&mut m, plan.shift[2]);
         assert_eq!(m[3], [0.0, 0.0, -6.0, 1.0]);
@@ -861,7 +877,10 @@ mod tests {
         };
         let fit = Fit { cos: 1.0, sin: 0.0, scale: 0.5, dz: 0.0 };
         let plan = skeleton_plan(&anim, &[[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 6.0]], &fit, 0.5, 0.5, 0.5).unwrap();
-        assert_eq!(plan.ratio, vec![1.0, 1.0, 2.0], "pelvis and root halved, the limb joint not");
+        assert_eq!(plan.ratio, vec![1.0, 2.0, 2.0], "bob is not part of the ratio");
+        assert_eq!((soft_bob(10.0, 0.5, 20.0), soft_bob(-10.0, 0.5, 20.0)), (5.0, -5.0), "small motion halved");
+        assert_eq!((soft_bob(30.0, 0.5, 20.0), soft_bob(-30.0, 0.5, 20.0)), (20.0, -20.0), "knee 10, plus the 10 beyond it");
+        assert_eq!(soft_bob(20.0, 0.5, 20.0), 10.0, "continuous at the knee");
         assert_eq!(soften_scale([0x1000, 0x1000, 0x0cd6], 0.5), [0x1000, 0x1000, 0x0e6b], "a squash halves toward 1");
         assert_eq!(soften_scale([0x1000, 0x1000, 0x1000], 0.0), [0x1000; 3]);
         assert_eq!(soften_scale([0, 0x1000, 0x1000], 0.5), [0, 0x1000, 0x1000], "a hidden joint stays hidden");

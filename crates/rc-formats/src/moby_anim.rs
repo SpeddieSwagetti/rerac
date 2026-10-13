@@ -1048,7 +1048,9 @@ pub fn evaluate_posed(class: &MobyAnimClass, s: &AnimState, snap: Option<&MobyFr
 /// A floor guard for a replacement hero model (`rc-engine`'s `hero_model`): sample points on the soles of the feet, in
 /// bind space, each on the joint that carries it. A pose that puts the lowest of them under `floor` is lifted by the
 /// difference (at most `max_lift`) so the feet stand on the ground in every animation, in the game and in the
-/// cutscenes alike. It never lowers a pose, so jumps and falls are untouched. Only the class it was made for (its joint
+/// cutscenes alike. A pose whose lowest point hovers within `pull_band` above the floor is eased down toward it (by at
+/// most a quarter of the band, continuously: nothing at the floor or at the band's top), so a foot that should be planted
+/// but floats a little is; a pose higher than the band (a jump, a fall) is untouched. Only the class it was made for (its joint
 /// count and the rest translation of joint 1) is lifted; with no guard set the evaluation is the game's, exactly.
 #[derive(Clone, Debug)]
 pub struct FloorGuard {
@@ -1061,6 +1063,8 @@ pub struct FloorGuard {
     pub floor: f32,
     /// Largest lift, packed units.
     pub max_lift: f32,
+    /// Height above the floor within which a hovering pose is eased down, packed units (0: never lowered).
+    pub pull_band: f32,
 }
 
 static FLOOR_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1088,10 +1092,17 @@ fn apply_floor_guard(class: &MobyAnimClass, out: &mut [Rows]) {
         let Some(f) = out.get(j as usize) else { continue };
         low = low.min(p[0] * f[0][2] + p[1] * f[1][2] + p[2] * f[2][2] + f[3][2]);
     }
-    if low < g.floor {
-        let lift = (g.floor - low).min(g.max_lift);
+    let shift = if low < g.floor {
+        (g.floor - low).min(g.max_lift)
+    } else if low < g.floor + g.pull_band {
+        let d = low - g.floor;
+        -d * (1.0 - d / g.pull_band)
+    } else {
+        0.0
+    };
+    if shift != 0.0 {
         for f in out.iter_mut() {
-            f[3][2] += lift;
+            f[3][2] += shift;
         }
     }
 }
@@ -1166,14 +1177,17 @@ mod tests {
     fn floor_guard_lifts_only_below_the_floor() {
         let class = |r1: [f32; 3]| MobyAnimClass { joint_count: 2, skeleton: vec![IDENTITY; 2], rest: vec![[0.0; 3], r1], parent_word: vec![0, 0x7000_0000], sequences: Vec::new() };
         let mine = class([1.5, 2.5, 3.5]);
-        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [1.5f32, 2.5, 3.5].map(f32::to_bits), points: vec![(1, [0.0, 0.0, 0.0])], floor: 10.0, max_lift: 25.0 }));
+        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [1.5f32, 2.5, 3.5].map(f32::to_bits), points: vec![(1, [0.0, 0.0, 0.0])], floor: 10.0, max_lift: 25.0, pull_band: 8.0 }));
         let pose = |z: f32| { let mut v = vec![IDENTITY; 2]; v[1][3][2] = z; v };
         let mut low = pose(4.0);
         apply_floor_guard(&mine, &mut low);
         assert_eq!((low[0][3][2], low[1][3][2]), (6.0, 10.0), "lifted by 6, every joint");
-        let mut above = pose(12.0);
-        apply_floor_guard(&mine, &mut above);
-        assert_eq!(above[1][3][2], 12.0, "above the floor: untouched");
+        let mut hover = pose(12.0);
+        apply_floor_guard(&mine, &mut hover);
+        assert_eq!(hover[1][3][2], 10.5, "hovering 2 above the floor: eased down by 2 * (1 - 2/8)");
+        let mut flying = pose(30.0);
+        apply_floor_guard(&mine, &mut flying);
+        assert_eq!(flying[1][3][2], 30.0, "above the band: untouched");
         let mut deep = pose(-100.0);
         apply_floor_guard(&mine, &mut deep);
         assert_eq!(deep[1][3][2], -75.0, "the lift is capped");
