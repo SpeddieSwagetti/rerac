@@ -9,12 +9,20 @@
 //!   joint lists and collision stay (the game logic reads them), only the packets and the texture slots change.
 //! * **Lighting**: her vertices carry the game's packed normals (azimuth / elevation bytes), so `moby.wgsl` lights
 //!   her with the instance's light block like any moby; the per-vertex RGBA multipliers default to 0x80 (1.0).
-//! * **Skinning**: every vertex is skinned to one joint of Ratchet's skeleton (`MobySkin::joint`), so the palette
-//!   path runs and she moves with that joint; she does not deform yet. The joint is the one his back attachment
-//!   list (joint list 5: where Clank and the packs ride) resolves to, so she turns with his body in flips, bobs
-//!   with his run and lowers in his crouch; the root joint stays put in all of them. `RC_LAUMA_SKIN=root` binds to
-//!   the root joint instead, `RC_LAUMA_SKIN=static` to no joint at all (joint count 0: the identity). Mapping her
-//!   bones onto his joints later means filling [`MobySkin`] per vertex in [`build_submesh`], nothing else.
+//! * **Skinning (version 2 model, the default)**: her bones are mapped onto Ratchet's 111 joints by
+//!   `tools/lauma_rig.py`, and the file carries each vertex's skin (up to three of his joints, weights summing to 256)
+//!   and the positions his joints take in her T pose. His animations are rotations about his joints in the frame of
+//!   his own T-pose bind pose, so the mesh is posed into a T pose first and his joints are moved to her proportions:
+//!   [`skeleton_plan`] / [`apply_skeleton`] rewrite the class's rest translations and inverse-bind rows (the engine's
+//!   copy, the class header's copy and everything made from them: worn items, snapshots, attachments), and
+//!   [`rescale_translation_keys`] re-anchors his translation keys (the pelvis bob, face joints, the arm layers of
+//!   classes 1 and 2) on her rest translations, scaled by how much longer or shorter her segment is. Rotation keys,
+//!   scale keys, timing and every other sequence are untouched, so she walks, runs, jumps and fights on his clips.
+//! * **Skinning (version 1 model, or `RC_LAUMA_SKIN=back|root|static`)**: every vertex rides one joint
+//!   (`MobySkin::joint`) and she does not deform. The joint is the one his back attachment list (joint list 5:
+//!   where Clank and the packs ride) resolves to, so she turns with his body in flips, bobs with his run and lowers
+//!   in his crouch. `RC_LAUMA_SKIN=root` binds to the root joint instead, `RC_LAUMA_SKIN=static` to no joint at all
+//!   (joint count 0: the identity). These leave his skeleton alone.
 //! * **Data structure**: one packet of packed `i16` positions (in Ratchet's own class scale, so his animation
 //!   translations still apply), 4.12 ST, the game's triangle list with texture slots 0..15, drawn as the high and
 //!   the low LOD alike (a far hero must not vanish), no metal packets (his chrome would hang in the air) and no
@@ -26,7 +34,8 @@
 //!
 //! Environment: `RC_LAUMA=1` enables; `RC_LAUMA_MODEL=<path>` another file; `RC_LAUMA_SCALE=<f>` (default 1) scales her
 //! relative to the fitted size; `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
-//! model forward is +x; the converter faces her that way); `RC_LAUMA_SKIN=back|root|static` as above (default `back`).
+//! model forward is +x; the converter faces her that way); `RC_LAUMA_SKIN=rig|back|root|static` as above (default
+//! `rig` for a version 2 model, `back` for version 1).
 //! With `RC_MOBY_CPU_LIGHT` the class colours are baked at load before this runs, so Ratchet stays.
 //!
 //! `RC_LAUMA_DUMP=1` (with or without `RC_LAUMA`) writes `lauma_dump.txt` into the working directory once per
@@ -39,6 +48,7 @@ use anyhow::{ensure, Context, Result};
 use rc_formats::gadget::{self, RATCHET_O_CLASS};
 use rc_formats::level::{LevelCore, TextureEntry};
 use rc_formats::moby::{MobySkin, MobySubmesh, MobyTriangle, MobyVertex, MobyVertexKind};
+use rc_formats::moby_anim::{MobyAnimClass, MobySequence};
 use rc_formats::texture::{LevelTexture, Texture, TextureSource, TextureTable};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -61,6 +71,16 @@ struct Asset {
     /// Material -> index into `textures`, 0xff for none.
     mat_tex: [u8; 16],
     textures: Vec<Texture>,
+    /// Version 2 only: the retargeting block.
+    rig: Option<RigData>,
+}
+
+/// The rig block of a version 2 model (`tools/lauma_rig.py`).
+struct RigData {
+    /// Per vertex: the skin on Ratchet's joints.
+    skin: Vec<MobySkin>,
+    /// Where each of Ratchet's joints sits in her T pose: game axes, the model's own frame (before the fit).
+    joints: Vec<[f32; 3]>,
 }
 
 struct Reader<'a> {
@@ -78,6 +98,10 @@ impl<'a> Reader<'a> {
 
     fn u32(&mut self) -> Result<u32> { Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap())) }
 
+    fn u16(&mut self) -> Result<u16> { Ok(u16::from_le_bytes(self.take(2)?.try_into().unwrap())) }
+
+    fn u8(&mut self) -> Result<u8> { Ok(self.take(1)?[0]) }
+
     fn floats<const N: usize>(&mut self, count: usize) -> Result<Vec<[f32; N]>> {
         let bytes = count.checked_mul(N * 4).context("the vertex count is absurd")?;
         let raw = self.take(bytes)?;
@@ -88,7 +112,8 @@ impl<'a> Reader<'a> {
 fn parse(data: &[u8]) -> Result<Asset> {
     let mut r = Reader { data, at: 0 };
     ensure!(r.take(4)? == b"RCHM", "not a hero model file (magic)");
-    ensure!(r.u32()? == 1, "unsupported hero model version");
+    let version = r.u32()?;
+    ensure!(version == 1 || version == 2, "unsupported hero model version {version}");
     let (nv, nt, ntex) = (r.u32()? as usize, r.u32()? as usize, r.u32()? as usize);
     let mat_tex: [u8; 16] = r.take(16)?.try_into().unwrap();
     let pos = r.floats::<3>(nv)?;
@@ -106,7 +131,25 @@ fn parse(data: &[u8]) -> Result<Asset> {
     }
     ensure!(tris.iter().all(|t| t[..3].iter().all(|&i| (i as usize) < nv) && t[3] < 16), "a triangle is out of range");
     ensure!(mat_tex.iter().all(|&t| t == 0xff || (t as usize) < ntex), "a material names a missing texture");
-    Ok(Asset { pos, nrm, uv, tris, mat_tex, textures })
+    let rig = if version == 2 {
+        let nj = r.u32()? as usize;
+        ensure!((1..=0x70).contains(&nj), "the rig has {nj} joints");
+        let mut skin = Vec::with_capacity(nv);
+        for _ in 0..nv {
+            let joints = [r.u8()?, r.u8()?, r.u8()?];
+            let count = r.u8()?;
+            let weights = [r.u16()?, r.u16()?, r.u16()?];
+            ensure!((1..=3).contains(&count), "a vertex has {count} skin influences");
+            let used = count as usize;
+            ensure!(weights[..used].iter().map(|&w| w as u32).sum::<u32>() == 256, "a vertex's skin weights do not sum to 256");
+            ensure!(joints[..used].iter().all(|&j| (j as usize) < nj), "a vertex skins to a joint past the rig");
+            skin.push(MobySkin { count, joints, weights });
+        }
+        Some(RigData { skin, joints: r.floats::<3>(nj)? })
+    } else {
+        None
+    };
+    Ok(Asset { pos, nrm, uv, tris, mat_tex, textures, rig })
 }
 
 /// The model, read once per process. A missing or broken file leaves Ratchet in place.
@@ -241,8 +284,8 @@ struct Fit {
 }
 
 /// Her packet in Ratchet's packed units (`inv` = 1024 / class scale): positions fitted and rounded to `i16`
-/// (returns how many vertices had to be clamped), normals as bytes, ST in 4.12, every vertex on one joint.
-fn build_submesh(a: &Asset, fit: &Fit, inv: f32, skin: MobySkin) -> (MobySubmesh, usize) {
+/// (returns how many vertices had to be clamped), normals as bytes, ST in 4.12, `skin_of(i)` the skin of vertex `i`.
+fn build_submesh(a: &Asset, fit: &Fit, inv: f32, skin_of: &dyn Fn(usize) -> MobySkin) -> (MobySubmesh, usize) {
     let mut clamped = 0;
     let mut vertices = Vec::with_capacity(a.pos.len());
     for (i, ((p, n), t)) in a.pos.iter().zip(&a.nrm).zip(&a.uv).enumerate() {
@@ -252,6 +295,7 @@ fn build_submesh(a: &Asset, fit: &Fit, inv: f32, skin: MobySkin) -> (MobySubmesh
             clamped += 1;
         }
         let (normal_azimuth, normal_elevation) = normal_bytes([n[0] * fit.cos - n[1] * fit.sin, n[0] * fit.sin + n[1] * fit.cos, n[2]]);
+        let skin = skin_of(i);
         vertices.push(MobyVertex {
             raw: [0; 8],
             normal_azimuth,
@@ -260,7 +304,11 @@ fn build_submesh(a: &Asset, fit: &Fit, inv: f32, skin: MobySkin) -> (MobySubmesh
             y: packed[1] as i16,
             z: packed[2] as i16,
             id: (i & 0x1ff) as u16,
-            kind: MobyVertexKind::Single,
+            kind: match skin.count {
+                2 => MobyVertexKind::TwoWay,
+                3 => MobyVertexKind::ThreeWay,
+                _ => MobyVertexKind::Single,
+            },
             duplicate: false,
             skin,
             st: [(t[0] * 4096.0).round() as i16, (t[1] * 4096.0).round() as i16],
@@ -287,6 +335,153 @@ fn build_submesh(a: &Asset, fit: &Fit, inv: f32, skin: MobySkin) -> (MobySubmesh
         is_metal: false,
     };
     (sub, clamped)
+}
+
+/// The new skeleton, worked out before anything is changed (so a bad model leaves Ratchet whole).
+struct SkeletonPlan {
+    /// New rest local translations, packed units.
+    rest: Vec<[f32; 3]>,
+    /// His rest local translations, packed units (what his translation keys are measured from).
+    old_rest: Vec<[f32; 3]>,
+    /// How far each joint's world position moves, packed units: the inverse-bind translation row follows.
+    shift: Vec<[f32; 3]>,
+    /// Scale of a translation key's offset from the rest translation, per joint: her segment over his.
+    ratio: Vec<f32>,
+}
+
+fn length(v: [f32; 3]) -> f32 { (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() }
+
+/// Each joint's position in the rest pose: the sum of the rest translations up the parent chain.
+fn world_positions(anim: &MobyAnimClass, rest: &[[f32; 3]]) -> Vec<[f32; 3]> {
+    (0..anim.joint_count)
+        .map(|j| {
+            let mut p = [0.0f32; 3];
+            let mut at = Some(j);
+            for _ in 0..64 {
+                let Some(k) = at else { break };
+                if k >= rest.len() {
+                    break;
+                }
+                for a in 0..3 {
+                    p[a] += rest[k][a];
+                }
+                at = anim.parent(k);
+            }
+            p
+        })
+        .collect()
+}
+
+/// Moves Ratchet's joints to `joints` (her T pose, the model's frame) through the same fit as the mesh. The root stays
+/// where it is (the floor under the instance), and a joint with no parent stays too.
+fn skeleton_plan(anim: &MobyAnimClass, joints: &[[f32; 3]], fit: &Fit, unit: f32) -> Result<SkeletonPlan> {
+    let n = anim.joint_count;
+    ensure!(joints.len() == n && anim.rest.len() == n && anim.skeleton.len() == n, "the model's rig has {} joints, Ratchet has {n}", joints.len());
+    let old_world = world_positions(anim, &anim.rest);
+    let new_world: Vec<[f32; 3]> = (0..n)
+        .map(|j| {
+            if anim.parent(j).is_none() {
+                return old_world[j];
+            }
+            let p = joints[j];
+            let (x, y) = (p[0] * fit.cos - p[1] * fit.sin, p[0] * fit.sin + p[1] * fit.cos);
+            [x * fit.scale / unit, y * fit.scale / unit, (p[2] * fit.scale + fit.dz) / unit]
+        })
+        .collect();
+    ensure!(new_world.iter().all(|p| p.iter().all(|c| c.is_finite() && c.abs() < 30000.0)), "a joint of the rig is out of the packed range");
+    let rest: Vec<[f32; 3]> = (0..n)
+        .map(|j| match anim.parent(j) {
+            Some(p) if p < n => [0, 1, 2].map(|a| new_world[j][a] - new_world[p][a]),
+            _ => anim.rest[j],
+        })
+        .collect();
+    let shift = (0..n).map(|j| [0, 1, 2].map(|a| new_world[j][a] - old_world[j][a])).collect();
+    // A joint whose rest offset is tiny keeps its keys as they are; the root follows the pelvis (a bob in height).
+    let min_len = 0.02 / unit;
+    let mut ratio: Vec<f32> = (0..n)
+        .map(|j| {
+            let old = length(anim.rest[j]);
+            if old > min_len { (length(rest[j]) / old).clamp(0.25, 4.0) } else { 1.0 }
+        })
+        .collect();
+    if n > 1 {
+        ratio[0] = ratio[1];
+    }
+    Ok(SkeletonPlan { rest, old_rest: anim.rest.clone(), shift, ratio })
+}
+
+/// The inverse bind matrix of a joint that moved by `d` (packed units): its translation row is `-b * R` for the bind
+/// position `b` and the matrix's rotation rows `R`, so it changes by `-d * R` (the rotation is the identity for nearly
+/// every joint of his).
+fn shift_inverse_bind(m: &mut [[f32; 4]; 4], d: [f32; 3]) {
+    for a in 0..3 {
+        let delta = d[0] * m[0][a] + d[1] * m[1][a] + d[2] * m[2][a];
+        m[3][a] -= delta;
+    }
+}
+
+/// One translation key of joint `j` re-anchored: a key replaces the joint's rest translation, so the new key is
+/// `rest' + ratio * (key - rest)` (her rest, plus his offset from his rest scaled by her segment over his).
+fn rescale_key(plan: &SkeletonPlan, j: usize, key: [i16; 3]) -> [i16; 3] {
+    std::array::from_fn(|a| {
+        let v = plan.rest[j][a] + plan.ratio[j] * (key[a] as f32 - plan.old_rest[j][a]);
+        v.round().clamp(-32768.0, 32767.0) as i16
+    })
+}
+
+/// Re-anchors every translation key of the sequences ([`rescale_key`]), in the frame's records and in the payload bytes
+/// the chain evaluation reads. Returns the records changed.
+fn rescale_translation_keys(seqs: &mut [Option<MobySequence>], plan: &SkeletonPlan) -> usize {
+    let n = plan.rest.len();
+    let mut changed = 0;
+    for seq in seqs.iter_mut().flatten() {
+        for f in seq.frames.iter_mut() {
+            let at = f.header.trans_offset as usize;
+            for (i, r) in f.trans.iter_mut().enumerate() {
+                let j = r.joint as usize;
+                if (r.joint as i8) < 0 || j >= n {
+                    continue;
+                }
+                let t = rescale_key(plan, j, r.trans);
+                r.trans = t;
+                let o = at + 8 * i;
+                if o + 6 <= f.payload.len() {
+                    for a in 0..3 {
+                        f.payload[o + 2 * a..o + 2 * a + 2].copy_from_slice(&t[a].to_le_bytes());
+                    }
+                }
+                changed += 1;
+            }
+        }
+    }
+    changed
+}
+
+/// Writes the plan into class `ci` (the engine's animation data and the class header's skeleton) and into the
+/// sequences that carry his joint numbers: his own, and the animation-only classes 1 and 2 (the arm layers).
+/// Returns (translation keys rescaled, animation-only classes touched).
+fn apply_skeleton(mobys: &mut LevelMobys, ci: usize, plan: &SkeletonPlan) -> (usize, usize) {
+    let n = plan.rest.len();
+    let anim = &mut mobys.anim[ci];
+    for j in 0..n {
+        anim.rest[j] = plan.rest[j];
+        shift_inverse_bind(&mut anim.skeleton[j], plan.shift[j]);
+    }
+    let sk = &mut mobys.classes[ci].class.skeleton;
+    for j in 0..n {
+        if let Some(t) = sk.trans.get_mut(j) {
+            t.vector = plan.rest[j];
+        }
+        if let Some(m) = sk.matrices.get_mut(j) {
+            shift_inverse_bind(m, plan.shift[j]);
+        }
+    }
+    let mut keys = rescale_translation_keys(&mut mobys.anim[ci].sequences, plan);
+    let layers: Vec<usize> = mobys.classes.iter().enumerate().filter(|(_, c)| c.o_class == 1 || c.o_class == 2).map(|(i, _)| i).collect();
+    for &k in &layers {
+        keys += rescale_translation_keys(&mut mobys.anim[k].sequences, plan);
+    }
+    (keys, layers.len())
 }
 
 /// Replaces Ratchet's class 0 with Lauma when `RC_LAUMA=1`: her textures are appended to the moby texture table (the
@@ -344,7 +539,13 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     let (sin, cos) = env_f32("RC_LAUMA_YAW", 0.0).to_radians().sin_cos();
     let fit = Fit { cos, sin, scale, dz: zmin - lmin * scale };
 
-    let (skin, skin_note) = match std::env::var("RC_LAUMA_SKIN").unwrap_or_default().trim() {
+    let skin_mode = std::env::var("RC_LAUMA_SKIN").unwrap_or_default();
+    let rig = asset.rig.as_ref().filter(|_| matches!(skin_mode.trim(), "" | "rig"));
+    if rig.is_none() && skin_mode.trim() == "rig" {
+        eprintln!("hero model: RC_LAUMA_SKIN=rig, but the model is version 1 (no rig); run tools/lauma_convert.py with lauma_dump.txt");
+    }
+    let (single, skin_note) = match skin_mode.trim() {
+        _ if rig.is_some() => (MobySkin::default(), format!("Ratchet's joints per vertex (rig, {} joints)", rig.map_or(0, |r| r.joints.len()))),
         "static" => (MobySkin::default(), "no joint (static)".to_string()),
         "root" => (MobySkin::joint(ROOT_JOINT), format!("the root joint {ROOT_JOINT}")),
         _ => match back {
@@ -355,7 +556,13 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
             }
         },
     };
-    let (sub, clamped) = build_submesh(asset, &fit, 1.0 / unit, skin);
+    let skin_of = |i: usize| rig.map_or(single, |r| r.skin[i]);
+    let (sub, clamped) = build_submesh(asset, &fit, 1.0 / unit, &skin_of);
+    // His skeleton in her proportions, checked before anything changes.
+    let plan = match rig {
+        Some(r) => Some(skeleton_plan(&mobys.anim[ci], &r.joints, &fit, unit)?),
+        None => None,
+    };
 
     let mut slots = [0xffu8; 16];
     for (material, &t) in asset.mat_tex.iter().enumerate() {
@@ -377,10 +584,11 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     // No glow packets (the glow indices would otherwise point into Ratchet's lists).
     lc.class.header.rac1_byte_a = 0xff;
     lc.class.header.rac1_byte_b = 0xff;
+    let reshaped = plan.as_ref().map(|p| apply_skeleton(mobys, ci, p));
 
     println!(
         "hero model: Lauma replaces class {RATCHET_O_CLASS}: {} vertices, {} triangles, {} textures (moby table {first}..{}); Ratchet is {:.2} tall at scale {:.4}, \
-         she is scaled by {scale:.3}, skinned to {skin_note}{}",
+         she is scaled by {scale:.3}, skinned to {skin_note}{}{}",
         asset.pos.len(),
         asset.tris.len(),
         asset.textures.len(),
@@ -388,6 +596,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
         zmax - zmin,
         unit * 1024.0,
         if clamped > 0 { format!("; {clamped} vertices clamped to the packed range (try RC_LAUMA_SCALE below 1)") } else { String::new() },
+        reshaped.map_or(String::new(), |(keys, layers)| format!("; his skeleton reshaped to her proportions ({keys} translation keys rescaled, {layers} layer classes)")),
     );
     Ok(())
 }
@@ -415,6 +624,113 @@ mod tests {
             worst = worst.min(n[0] * d[0] + n[1] * d[1] + n[2] * d[2]);
         }
         assert!(worst > 0.9995, "worst dot {worst}");
+    }
+
+    /// The one-triangle model of the test below, as a version 1 file.
+    fn tiny_model() -> Vec<u8> {
+        let mut f = Vec::new();
+        f.extend_from_slice(b"RCHM");
+        for v in [1u32, 3, 1, 1] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        f.extend_from_slice(&[0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        for p in [[0.0f32, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+            for c in p {
+                f.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        for _ in 0..3 {
+            for c in [1.0f32, 0.0, 0.0] {
+                f.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        for _ in 0..3 {
+            for c in [0.5f32, 0.5] {
+                f.extend_from_slice(&c.to_le_bytes());
+            }
+        }
+        for v in [0u32, 1, 2, 0] {
+            f.extend_from_slice(&v.to_le_bytes());
+        }
+        f.extend_from_slice(&1u32.to_le_bytes());
+        f.extend_from_slice(&1u32.to_le_bytes());
+        f.extend_from_slice(&[255, 255, 255, 255]);
+        f
+    }
+
+    /// A version 2 file carries per-vertex skin and the joint positions; a wrong weight sum, a missing joint or a
+    /// zero influence count is refused.
+    #[test]
+    fn parse_reads_the_rig_block_and_refuses_a_broken_one() {
+        let rig = |weights: [u16; 2], joint: u8, count: u8| {
+            let mut f = tiny_model();
+            f[4..8].copy_from_slice(&2u32.to_le_bytes());
+            f.extend_from_slice(&2u32.to_le_bytes()); // two joints
+            for v in 0..3u8 {
+                f.extend_from_slice(&[if v == 2 { joint } else { 1 }, 0, 0, count]);
+                for w in [weights[0], weights[1], 0] {
+                    f.extend_from_slice(&w.to_le_bytes());
+                }
+            }
+            for p in [[0.0f32, 0.0, 0.0], [0.5, 0.25, 1.0]] {
+                for c in p {
+                    f.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+            f
+        };
+        let a = parse(&rig([256, 0], 1, 1)).unwrap();
+        let r = a.rig.as_ref().expect("a rig");
+        assert_eq!((r.skin.len(), r.joints.len()), (3, 2));
+        assert_eq!((r.skin[2].count, r.skin[2].joints[0], r.skin[2].weights[0]), (1, 1, 256));
+        assert_eq!(r.joints[1], [0.5, 0.25, 1.0]);
+        assert!(parse(&tiny_model()).unwrap().rig.is_none(), "version 1 has no rig");
+        assert!(parse(&rig([200, 0], 1, 1)).is_err(), "weights must sum to 256");
+        assert!(parse(&rig([256, 0], 2, 1)).is_err(), "joint 2 of 2");
+        assert!(parse(&rig([256, 0], 1, 0)).is_err(), "no influence");
+        let mut truncated = rig([256, 0], 1, 1);
+        truncated.pop();
+        assert!(parse(&truncated).is_err(), "truncated");
+    }
+
+    /// Three joints in a chain, moved to a model twice as tall: the rest translations are the differences of the new
+    /// positions, the inverse-bind rows and the translation keys follow, and a joint with no parent stays.
+    #[test]
+    fn skeleton_plan_reshapes_a_chain() {
+        use rc_formats::moby_anim::IDENTITY;
+        let mut skeleton = vec![IDENTITY; 3];
+        for (j, z) in [0.0f32, 2.0, 3.0].into_iter().enumerate() {
+            skeleton[j][3] = [0.0, 0.0, -z, 1.0]; // inverse bind of a joint at height z
+        }
+        let anim = MobyAnimClass {
+            joint_count: 3,
+            skeleton,
+            rest: vec![[0.0; 3], [0.0, 0.0, 2.0], [0.0, 0.0, 1.0]],
+            parent_word: vec![0, 0x7000_0000, 0x7000_0040],
+            sequences: Vec::new(),
+        };
+        let fit = Fit { cos: 1.0, sin: 0.0, scale: 0.5, dz: 0.0 };
+        // unit 0.5 m (exact in binary): the model's joints at 0, 4 and 6 m land at 4 and 6 units.
+        let plan = skeleton_plan(&anim, &[[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 6.0]], &fit, 0.5).unwrap();
+        assert_eq!(plan.rest, vec![[0.0; 3], [0.0, 0.0, 4.0], [0.0, 0.0, 2.0]]);
+        assert_eq!(plan.shift[1], [0.0, 0.0, 2.0]);
+        assert_eq!(plan.shift[2], [0.0, 0.0, 3.0]);
+        assert_eq!(plan.ratio, vec![2.0, 2.0, 2.0]);
+        let mut m = anim.skeleton[2];
+        shift_inverse_bind(&mut m, plan.shift[2]);
+        assert_eq!(m[3], [0.0, 0.0, -6.0, 1.0]);
+        // a key of joint 2 sitting 10 units above its rest: 20 above the new rest
+        assert_eq!(rescale_key(&plan, 2, [0, 0, 11]), [0, 0, 22]);
+        assert_eq!(rescale_key(&plan, 2, [0, 0, 1]), [0, 0, 2], "the rest translation maps to the new one");
+        assert!(skeleton_plan(&anim, &[[0.0; 3]; 2], &fit, 0.5).is_err(), "joint count mismatch");
+    }
+
+    /// With a rotated bind frame the translation row moves by `-d * R`, not `-d`.
+    #[test]
+    fn inverse_bind_shift_follows_the_rotation() {
+        let mut m = [[0.0, 1.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [5.0, 6.0, 7.0, 1.0]];
+        shift_inverse_bind(&mut m, [1.0, 2.0, 3.0]);
+        assert_eq!(m[3], [3.0, 5.0, 4.0, 1.0]);
     }
 
     /// A one-triangle model parses; damaged files are refused instead of panicking.

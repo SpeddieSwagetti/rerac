@@ -7,8 +7,13 @@
 Needs numpy and Pillow. What it does (everything the Rust side would otherwise need a glTF / PNG decoder for):
 
 * Reads the rest-pose geometry (positions, normals, UV set 0, triangles) of every primitive. The skin's bind pose is
-  the identity here (checked below), so the stored vertices ARE her rest pose; the 472 bones, the 60 face morph
-  targets and UV sets 1 / 2 are ignored (she does not animate yet).
+  the identity here (checked below), so the stored vertices ARE her rest pose; the 60 face morph targets and UV sets
+  1 / 2 are ignored.
+* With `--dump lauma_dump.txt` (written by `RC_LAUMA_DUMP=1`, Ratchet's skeleton) it also retargets her onto his 111
+  joints (tools/lauma_rig.py): her mesh is posed from the A pose into his T pose, every vertex is skinned to up to three
+  of his joints through her own bone weights, and the positions his joints should have in her proportions are written
+  beside the mesh. The engine then plays his animations on her. Without the dump the file is version 1 (no skin: she
+  rides one joint and does not deform).
 * Converts glTF axes (x = her left, y up, z = her front) to the game's (x forward, y left, z up): (gx, gy, gz) =
   (z, x, y), a proper rotation, so nothing is mirrored and the triangle winding is kept.
 * Builds the textures the engine's moby material takes: RGBA8 with the alpha in the GS form `texture::scale_alpha`
@@ -17,18 +22,23 @@ Needs numpy and Pillow. What it does (everything the Rust side would otherwise n
   the same vertices and UVs as material 13 with a mostly transparent texture) is composited into material 13's
   texture and its duplicate mesh dropped, so no coplanar layers fight for depth.
 
-File layout (little-endian): "RCHM", u32 version (1), u32 vertices, u32 triangles, u32 textures, u8[16] material ->
+File layout (little-endian): "RCHM", u32 version (1, or 2 with the rig block), u32 vertices, u32 triangles, u32 textures, u8[16] material ->
 texture (0xff: none; a dropped material), f32 positions[3 * V], f32 normals[3 * V], f32 uvs[2 * V],
 u32 triangles[4 * T] (a, b, c, material), then per texture u32 width, u32 height, width * height * 4 bytes RGBA.
+Version 2 appends, after the textures: u32 joint count (111), then per vertex u8 joint[3], u8 influence count, u16
+weight[3] (sum 256), then f32 joint position[3] per joint (game axes, the model's own frame, before the engine's fit).
 """
 import argparse
 import io
+import os
 import json
 import struct
 import sys
 
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 CT = {5120: np.int8, 5121: np.uint8, 5122: np.int16, 5123: np.uint16, 5125: np.uint32, 5126: np.float32}
 NC = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4, "MAT4": 16}
@@ -74,6 +84,17 @@ class Glb:
         if a.get("normalized"):
             out = out.astype(np.float32) / np.iinfo(dt).max
         return out
+
+    def skeleton(self):
+        """Her skin's joints: names, parent (index into the joint list, -1 root), rest world position (glTF axes)."""
+        nodes = self.j["nodes"]
+        parent = {c: i for i, n in enumerate(nodes) for c in n.get("children", [])}
+        joints = self.j["skins"][0]["joints"]
+        index = {n: k for k, n in enumerate(joints)}
+        names = [nodes[n].get("name", "?") for n in joints]
+        par = [index.get(parent.get(n), -1) for n in joints]
+        pos = np.array([node_world(nodes, parent, n)[:3, 3] for n in joints])
+        return names, par, pos
 
     def image(self, index):
         v = self.j["bufferViews"][self.j["images"][index]["bufferView"]]
@@ -140,6 +161,9 @@ def main():
     ap.add_argument("glb")
     ap.add_argument("rcm")
     ap.add_argument("--tex-max", type=int, default=1024, help="longest texture side (default 1024)")
+    ap.add_argument("--dump", default="lauma_dump.txt", help="Ratchet's skeleton dump (RC_LAUMA_DUMP=1); makes a rigged "
+                    "version 2 file (default lauma_dump.txt when it exists)")
+    ap.add_argument("--no-rig", action="store_true", help="write the version 1 file (no skin, no skeleton)")
     args = ap.parse_args()
     g = Glb(args.glb)
     j = g.j
@@ -187,21 +211,41 @@ def main():
             textures.append(encode(fit(sheet(k[1]), args.tex_max), k[0] == "alpha"))
 
     # Geometry: glTF (x her left, y up, z her front) -> game (x forward, y left, z up).
-    pos, nrm, uv, tris = [], [], [], []
-    base = 0
+    raw = []
     for p in prims:
-        m = p["material"]
+        at = p["attributes"]
+        raw.append(dict(m=p["material"], P=g.accessor(at["POSITION"]).astype(np.float32), N=g.accessor(at["NORMAL"]).astype(np.float32),
+                        U=g.accessor(at["TEXCOORD_0"]).astype(np.float32), I=g.accessor(p["indices"]).astype(np.uint32).reshape(-1, 3),
+                        J=g.accessor(at["JOINTS_0"]).astype(np.int64), W=g.accessor(at["WEIGHTS_0"]).astype(np.float64)))
+    rig = None
+    if not args.no_rig and os.path.exists(args.dump):
+        import lauma_rig
+        allp = lambda k, dt: np.concatenate([r[k] for r in raw]).astype(dt)
+        names, par, bone_pos = g.skeleton()
+        rig = lauma_rig.retarget(names, par, bone_pos, allp("P", np.float64), allp("N", np.float64), allp("J", np.int64), allp("W", np.float64), args.dump)
+        print(rig["report"])
+        at = 0
+        for r in raw:  # the posed vertices back into the primitives
+            n = len(r["P"])
+            r["P"], r["N"] = rig["pos"][at:at + n].astype(np.float32), rig["nrm"][at:at + n].astype(np.float32)
+            r["sj"], r["sw"], r["sc"] = (a[at:at + n] for a in rig["skin"])
+            at += n
+    elif not args.no_rig:
+        print(f"{args.dump}: not found; writing the version 1 model (no rig). Run the game once with RC_LAUMA_DUMP=1 to make it.")
+    pos, nrm, uv, tris, skj, skw, skc = [], [], [], [], [], [], []
+    base = 0
+    for r in raw:
+        m = r["m"]
         if m in OVERLAYS:
             continue
-        P = g.accessor(p["attributes"]["POSITION"]).astype(np.float32)
-        N = g.accessor(p["attributes"]["NORMAL"]).astype(np.float32)
-        U = g.accessor(p["attributes"]["TEXCOORD_0"]).astype(np.float32)
-        I = g.accessor(p["indices"]).astype(np.uint32).reshape(-1, 3)
+        P, N, U, I = r["P"], r["N"], r["U"], r["I"]
         pos.append(P[:, [2, 0, 1]])
         n = N[:, [2, 0, 1]]
         nrm.append(n / np.maximum(np.linalg.norm(n, axis=1, keepdims=True), 1e-8))
         uv.append(U)
         tris.append(np.column_stack([I + base, np.full(len(I), m, dtype=np.uint32)]))
+        if rig:
+            skj.append(r["sj"]), skw.append(r["sw"]), skc.append(r["sc"])
         base += len(P)
     pos, nrm, uv, tris = (np.concatenate(a).astype(t) for a, t in [(pos, np.float32), (nrm, np.float32), (uv, np.float32), (tris, np.uint32)])
 
@@ -215,7 +259,7 @@ def main():
 
     with open(args.rcm, "wb") as f:
         f.write(b"RCHM")
-        f.write(struct.pack("<IIII", 1, len(pos), len(tris), len(textures)))
+        f.write(struct.pack("<IIII", 2 if rig else 1, len(pos), len(tris), len(textures)))
         f.write(bytes(mat_tex))
         for a in (pos, nrm, uv):
             f.write(np.ascontiguousarray(a, dtype="<f4").tobytes())
@@ -223,6 +267,14 @@ def main():
         for t in textures:
             f.write(struct.pack("<II", t.shape[1], t.shape[0]))
             f.write(np.ascontiguousarray(t).tobytes())
+        if rig:
+            sj, sw, sc = np.concatenate(skj), np.concatenate(skw), np.concatenate(skc)
+            f.write(struct.pack("<I", len(rig["joints_game"])))
+            rec = np.zeros(len(pos), dtype=[("j", "u1", 3), ("c", "u1"), ("w", "<u2", 3)])
+            rec["j"], rec["c"], rec["w"] = sj, sc, sw
+            assert rec.itemsize == 10 and (rec["w"].sum(axis=1) == 256).all()
+            f.write(rec.tobytes())
+            f.write(np.ascontiguousarray(rig["joints_game"], dtype="<f4").tobytes())
     print(f"{args.rcm}: {len(pos)} vertices, {len(tris)} triangles, {len(textures)} textures "
           f"{[t.shape[1::-1] for t in textures]}, materials -> textures {mat_tex}")
 
