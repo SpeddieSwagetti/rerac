@@ -278,7 +278,7 @@ fn spawn_lauma(
         .collect();
 
     let n = spheres.len().max(1) as f32;
-    let centre = spheres.iter().fold(Vec3::ZERO, |acc, s| {
+    let _centre = spheres.iter().fold(Vec3::ZERO, |acc, s| {
         acc + Vec3::new(s[0], s[1], s[2])
     }) / n;
 

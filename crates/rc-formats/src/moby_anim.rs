@@ -1028,7 +1028,7 @@ pub fn evaluate_posed(class: &MobyAnimClass, s: &AnimState, snap: Option<&MobyFr
     }
 
     // Palette (§6.7): F.r_i = P0·S_i.x + P1·S_i.y + P2·S_i.z; F.r3 adds P3. S's w column is never read.
-    (0..jc.min(SPR_RECORDS))
+    let mut out: Vec<Rows> = (0..jc.min(SPR_RECORDS))
         .map(|j| {
             let p = rec[j];
             let sk = class.skeleton[j].map(bits4);
@@ -1040,7 +1040,60 @@ pub fn evaluate_posed(class: &MobyAnimClass, s: &AnimState, snap: Option<&MobyFr
             ];
             f.map(|r| r.map(f32::from_bits))
         })
-        .collect()
+        .collect();
+    apply_floor_guard(class, &mut out);
+    out
+}
+
+/// A floor guard for a replacement hero model (`rc-engine`'s `hero_model`): sample points on the soles of the feet, in
+/// bind space, each on the joint that carries it. A pose that puts the lowest of them under `floor` is lifted by the
+/// difference (at most `max_lift`) so the feet stand on the ground in every animation, in the game and in the
+/// cutscenes alike. It never lowers a pose, so jumps and falls are untouched. Only the class it was made for (its joint
+/// count and the rest translation of joint 1) is lifted; with no guard set the evaluation is the game's, exactly.
+#[derive(Clone, Debug)]
+pub struct FloorGuard {
+    pub joint_count: usize,
+    /// Bits of `class.rest[1]` (the class the guard belongs to).
+    pub rest1: [u32; 3],
+    /// (joint, bind-space position) in packed units.
+    pub points: Vec<(u8, [f32; 3])>,
+    /// Lowest z the sample points may reach, packed units.
+    pub floor: f32,
+    /// Largest lift, packed units.
+    pub max_lift: f32,
+}
+
+static FLOOR_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static FLOOR: std::sync::RwLock<Option<FloorGuard>> = std::sync::RwLock::new(None);
+
+/// Installs (or, with `None`, removes) the floor guard.
+pub fn set_floor_guard(g: Option<FloorGuard>) {
+    let on = g.is_some();
+    *FLOOR.write().unwrap_or_else(|e| e.into_inner()) = g;
+    FLOOR_ON.store(on, std::sync::atomic::Ordering::Release);
+}
+
+/// Lifts the whole palette in z when the guarded class's foot points are under the floor.
+fn apply_floor_guard(class: &MobyAnimClass, out: &mut [Rows]) {
+    if !FLOOR_ON.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let guard = FLOOR.read().unwrap_or_else(|e| e.into_inner());
+    let Some(g) = guard.as_ref() else { return };
+    if class.joint_count != g.joint_count || class.rest.get(1).map(|r| r.map(f32::to_bits)) != Some(g.rest1) {
+        return;
+    }
+    let mut low = f32::MAX;
+    for &(j, p) in &g.points {
+        let Some(f) = out.get(j as usize) else { continue };
+        low = low.min(p[0] * f[0][2] + p[1] * f[1][2] + p[2] * f[2][2] + f[3][2]);
+    }
+    if low < g.floor {
+        let lift = (g.floor - low).min(g.max_lift);
+        for f in out.iter_mut() {
+            f[3][2] += lift;
+        }
+    }
 }
 
 /// The runtime pose layers (§6.4) on the local records `[q, inherited scale, translation, _]`, in list order.
@@ -1105,6 +1158,33 @@ mod tests {
     const Q_ID: [i16; 4] = [0, 0, 0, 0x7fff];
 
     fn q66_f1() -> [i16; 4] { bytemuck::pod_read_unaligned(&Q66_F1) }
+
+    /// A pose with the foot point under the floor is lifted (by at most `max_lift`), one above it is not, another class is
+    /// not, and with the guard removed nothing changes. The class has a rest translation no other test uses, so tests
+    /// running in parallel are not touched by the guard.
+    #[test]
+    fn floor_guard_lifts_only_below_the_floor() {
+        let class = |r1: [f32; 3]| MobyAnimClass { joint_count: 2, skeleton: vec![IDENTITY; 2], rest: vec![[0.0; 3], r1], parent_word: vec![0, 0x7000_0000], sequences: Vec::new() };
+        let mine = class([1.5, 2.5, 3.5]);
+        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [1.5f32, 2.5, 3.5].map(f32::to_bits), points: vec![(1, [0.0, 0.0, 0.0])], floor: 10.0, max_lift: 25.0 }));
+        let pose = |z: f32| { let mut v = vec![IDENTITY; 2]; v[1][3][2] = z; v };
+        let mut low = pose(4.0);
+        apply_floor_guard(&mine, &mut low);
+        assert_eq!((low[0][3][2], low[1][3][2]), (6.0, 10.0), "lifted by 6, every joint");
+        let mut above = pose(12.0);
+        apply_floor_guard(&mine, &mut above);
+        assert_eq!(above[1][3][2], 12.0, "above the floor: untouched");
+        let mut deep = pose(-100.0);
+        apply_floor_guard(&mine, &mut deep);
+        assert_eq!(deep[1][3][2], -75.0, "the lift is capped");
+        let mut other = pose(4.0);
+        apply_floor_guard(&class([9.0, 0.0, 0.0]), &mut other);
+        assert_eq!(other[1][3][2], 4.0, "another class is not lifted");
+        set_floor_guard(None);
+        let mut off = pose(4.0);
+        apply_floor_guard(&mine, &mut off);
+        assert_eq!(off[1][3][2], 4.0, "no guard, no change");
+    }
 
     #[test]
     fn class66_quaternion_decode_and_rows() {

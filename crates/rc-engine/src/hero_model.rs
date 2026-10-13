@@ -32,8 +32,8 @@
 //! and alpha already in the form the engine takes). Her size is fitted to Ratchet's: his bind-pose height from his own
 //! packets, feet on his feet.
 //!
-//! Environment: `RC_LAUMA=1` enables; `RC_LAUMA_MODEL=<path>` another file; `RC_LAUMA_SCALE=<f>` (default [`LAUMA_SCALE`], 0.25 to
-//! 2.5) scales her relative to the fitted size (1 = Ratchet's own height); `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
+//! Environment: `RC_LAUMA=1` enables; `RC_LAUMA_MODEL=<path>` another file; `RC_LAUMA_SCALE=<f>` (default 1) scales her relative to
+//! her baseline size, [`LAUMA_BASE`] times Ratchet's height (1 is the size she should be; up to about 1.4 holds); `RC_LAUMA_YAW=<degrees>` (default 0) turns her about the vertical axis (the game's
 //! model forward is +x; the converter faces her that way); `RC_LAUMA_SKIN=rig|back|root|static` as above (default
 //! `rig` for a version 2 model, `back` for version 1). `RC_LAUMA_BOB=<f>` (default [`LAUMA_BOB`]) scales the pelvis and
 //! root translation keys' motion (the bob of a walk or run, the dip of a landing) and `RC_LAUMA_SQUASH=<f>` (default
@@ -50,7 +50,7 @@ use anyhow::{ensure, Context, Result};
 use rc_formats::gadget::{self, RATCHET_O_CLASS};
 use rc_formats::level::{LevelCore, TextureEntry};
 use rc_formats::moby::{MobySkin, MobySubmesh, MobyTriangle, MobyVertex, MobyVertexKind};
-use rc_formats::moby_anim::{MobyAnimClass, MobySequence};
+use rc_formats::moby_anim::{FloorGuard, MobyAnimClass, MobySequence};
 use rc_formats::texture::{LevelTexture, Texture, TextureSource, TextureTable};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -174,10 +174,10 @@ fn asset() -> Option<&'static Asset> {
 /// `RC_LAUMA=1`.
 pub fn enabled() -> bool { std::env::var("RC_LAUMA").is_ok_and(|v| v.trim() == "1") }
 
-/// How large she is relative to Ratchet's height when `RC_LAUMA_SCALE` is not set. At 1 she is his height with her
-/// headdress; 1.75 reads well on screen. The packed positions hold up to about 2.5 (the converter's clamp count says
-/// when they do not).
-const LAUMA_SCALE: f32 = 1.75;
+/// Her baseline size in Ratchet's heights (headdress included): what `RC_LAUMA_SCALE=1` means. 1 was too small on screen.
+const LAUMA_BASE: f32 = 1.0;
+/// The largest total size (in his heights) the packed positions hold, with a margin.
+const LAUMA_MAX: f32 = 2.5;
 /// Share of his pelvis / root translation motion she keeps by default (his bob is tuned for a body a third the height).
 const LAUMA_BOB: f32 = 0.6;
 /// Share of his squash and stretch she keeps by default.
@@ -499,6 +499,47 @@ fn rescale_translation_keys(seqs: &mut [Option<MobySequence>], plan: &SkeletonPl
     changed
 }
 
+/// The floor guard ([`FloorGuard`]): up to eight points per foot, the lowest vertex of each slice of the foot along its
+/// length, among the vertices whose strongest joint is one of the ankle, foot, ball or toe joints.
+fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, floor: f32, max_lift: f32, anim: &MobyAnimClass) -> Option<FloorGuard> {
+    const FEET: [u8; 8] = [94, 95, 96, 97, 100, 101, 102, 103];
+    const BINS: usize = 8;
+    let mut points = Vec::new();
+    for left in [false, true] {
+        let mut cand: Vec<(u8, [f32; 3])> = Vec::new();
+        for (i, sk) in rig.skin.iter().enumerate() {
+            let (mut best, mut best_w) = (0u8, 0u16);
+            for k in 0..sk.count as usize {
+                if sk.weights[k] > best_w {
+                    (best, best_w) = (sk.joints[k], sk.weights[k]);
+                }
+            }
+            if !FEET.contains(&best) || (best >= 98) != left {
+                continue;
+            }
+            let p = asset.pos[i];
+            let (x, y) = (p[0] * fit.cos - p[1] * fit.sin, p[0] * fit.sin + p[1] * fit.cos);
+            cand.push((best, [x * fit.scale / unit, y * fit.scale / unit, (p[2] * fit.scale + fit.dz) / unit]));
+        }
+        if cand.is_empty() {
+            continue;
+        }
+        let (lo, hi) = cand.iter().fold((f32::MAX, f32::MIN), |(lo, hi), c| (lo.min(c.1[0]), hi.max(c.1[0])));
+        let mut bins: [Option<(u8, [f32; 3])>; BINS] = [None; BINS];
+        for c in &cand {
+            let b = (if hi > lo { ((c.1[0] - lo) / (hi - lo) * BINS as f32) as usize } else { 0 }).min(BINS - 1);
+            if bins[b].map_or(true, |o| c.1[2] < o.1[2]) {
+                bins[b] = Some(*c);
+            }
+        }
+        points.extend(bins.into_iter().flatten());
+    }
+    if points.is_empty() || anim.rest.len() < 2 {
+        return None;
+    }
+    Some(FloorGuard { joint_count: anim.joint_count, rest1: anim.rest[1].map(f32::to_bits), points, floor: floor / unit, max_lift: max_lift / unit })
+}
+
 /// A sequence the cutscene player streams into an actor's slot (its own frames, never part of the level's class data):
 /// Ratchet's keys in it get the same treatment as his own sequences, or his neck and pelvis offsets would return in
 /// every cutscene. Other classes are left alone.
@@ -590,12 +631,13 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     }
     let (lmin, lmax) = asset.pos.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| (lo.min(p[2]), hi.max(p[2])));
     ensure!(lmax > lmin, "the model has no height");
-    let asked = env_f32("RC_LAUMA_SCALE", LAUMA_SCALE);
-    let relative = if asked.is_finite() { asked.clamp(0.25, 2.5) } else { LAUMA_SCALE };
+    let asked = env_f32("RC_LAUMA_SCALE", 1.0);
+    let relative = if asked.is_finite() { asked.clamp(0.25, LAUMA_MAX / LAUMA_BASE) } else { 1.0 };
     if relative != asked {
-        eprintln!("hero model: RC_LAUMA_SCALE={asked} is outside 0.25..2.5; using {relative}");
+        eprintln!("hero model: RC_LAUMA_SCALE={asked} is outside 0.25..{:.2}; using {relative}", LAUMA_MAX / LAUMA_BASE);
     }
-    let scale = (zmax - zmin) / (lmax - lmin) * relative;
+    let total = LAUMA_BASE * relative;
+    let scale = (zmax - zmin) / (lmax - lmin) * total;
     let (sin, cos) = env_f32("RC_LAUMA_YAW", 0.0).to_radians().sin_cos();
     let fit = Fit { cos, sin, scale, dz: zmin - lmin * scale };
 
@@ -648,12 +690,24 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     // No glow packets (the glow indices would otherwise point into Ratchet's lists).
     lc.class.header.rac1_byte_a = 0xff;
     lc.class.header.rac1_byte_b = 0xff;
+    let size_source = match std::env::var("RC_LAUMA_SCALE") {
+        Ok(v) => format!("RC_LAUMA_SCALE={v} set in the environment"),
+        Err(_) => "RC_LAUMA_SCALE not set".to_string(),
+    };
     let reshaped = plan.as_ref().map(|p| apply_skeleton(mobys, ci, p));
     *PLAN.lock().unwrap_or_else(|e| e.into_inner()) = plan.clone();
+    // Her legs are longer than his and his foot angles were made for his feet: keep her soles on the ground in every
+    // pose (RC_LAUMA_FLOOR=0 turns it off).
+    let guard = match (rig, env_f32("RC_LAUMA_FLOOR", 1.0) > 0.5) {
+        (Some(r), true) => floor_guard(asset, r, &fit, unit, zmin, 0.12 * total, &mobys.anim[ci]),
+        _ => None,
+    };
+    let guarded = guard.as_ref().map_or(0, |g| g.points.len());
+    rc_formats::moby_anim::set_floor_guard(guard);
 
     println!(
         "hero model: Lauma replaces class {RATCHET_O_CLASS}: {} vertices, {} triangles, {} textures (moby table {first}..{}); Ratchet is {:.2} tall at scale {:.4}, \
-         she is scaled by {scale:.3}, skinned to {skin_note}{}{}",
+         she is scaled by {scale:.3} ({total:.2} x his height: baseline {LAUMA_BASE} x RC_LAUMA_SCALE {relative}; {size_source}), skinned to {skin_note}{}{}",
         asset.pos.len(),
         asset.tris.len(),
         asset.textures.len(),
@@ -661,7 +715,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
         zmax - zmin,
         unit * 1024.0,
         if clamped > 0 { format!("; {clamped} vertices clamped to the packed range (try RC_LAUMA_SCALE below 1)") } else { String::new() },
-        reshaped.map_or(String::new(), |(keys, layers)| format!("; his skeleton reshaped to her proportions ({keys} translation keys rescaled, {layers} layer classes)")),
+        reshaped.map_or(String::new(), |(keys, layers)| format!("; his skeleton reshaped to her proportions ({keys} translation keys rescaled, {layers} layer classes); floor guard on {guarded} foot points")),
     );
     Ok(())
 }
