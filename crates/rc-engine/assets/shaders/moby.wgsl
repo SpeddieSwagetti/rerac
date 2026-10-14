@@ -11,6 +11,14 @@
 // (the 65536 + c/128 float's 1/128 grid truncation), then the EE pack: s16(c)·m saturated to s16, >> 7,
 // low byte. Colours travel as bytes / 128 like the tfrag pass.
 //
+// Cel shading (a replacement hero model, hero_model.rs; vertices flagged SKIN_TOON, bit 25 of skin.x): the fragment
+// replaces the smooth Gouraud result by a banded one. `lam` is the vertex's lambert term against the moby's own three
+// lights (normalised by their total colour, so it does not depend on how bright the level is), the band a smoothstep of
+// it, shade = pastel cool shadow tint -> white, times the texture; a faint rim from the view-space normal. Vertices
+// flagged SKIN_OUTLINE (bit 26) are the outline shell: pre-displaced along smoothed normals at load, drawn only where
+// their normal faces away from the camera (no back-face culling here, so the facing test is on the normal), flat dark
+// texture colour. Every other vertex has toon.x = 0 and takes the original path unchanged.
+//
 // MODULATE: Cv = (Ct * Cf) >> 7, clamped. Gouraud RGBA and F are interpolated linearly in screen space
 // (@interpolate(linear)), ST perspective-correctly. Alpha: ALPHA_1 = 0x8000000044, TEST_1 = 0x5360b per
 // moby (MobyProc GS state at 0x1dedc0), as for tfrags; the fragment returns As / 128 and the GS_ATEST_*
@@ -27,6 +35,17 @@
 #ifdef DISPLAY_BLEND_ADD
 #import rerac::display_blend::gs_add
 #endif
+
+const SKIN_TOON: u32 = 0x2000000u;
+const SKIN_OUTLINE: u32 = 0x4000000u;
+// Cel look (display-encoded colour space, like the texture): band edge and softness on `lam`, the shadow tint, an
+// overall gain, the rim strength, and the outline colour (multiplies the texture: a darkened albedo).
+const TOON_THR: f32 = 0.34;
+const TOON_SOFT: f32 = 0.05;
+const TOON_SHADOW: vec3<f32> = vec3<f32>(0.68, 0.72, 0.90);
+const TOON_GAIN: f32 = 1.06;
+const TOON_RIM: f32 = 0.22;
+const OUTLINE_TINT: vec3<f32> = vec3<f32>(0.30, 0.21, 0.27);
 
 struct MobyFog {
     // rgb = FOGCOL (display-encoded 0..1), w = 1 when fog is enabled.
@@ -87,6 +106,9 @@ struct MobyVertexOutput {
     @location(1) @interpolate(linear) color: vec4<f32>,
     // GS F / 255, screen-space linear like the GS.
     @location(2) @interpolate(linear) fog: f32,
+    // x = 0 plain, 1 cel-shaded, 2 outline shell; y = lambert term (0..1); z = how bright the moby's light is; w = view-space
+    // normal z (> 0 faces the camera).
+    @location(3) toon: vec4<f32>,
 }
 
 fn s16(x: i32) -> i32 { return (x << 16u) >> 16u; }
@@ -125,6 +147,19 @@ fn vertex(v: MobyVertex) -> MobyVertexOutput {
     let scroll = (*inst).misc.w;
     out.uv = v.uv + vec2<f32>(f32(s16(i32(scroll & 0xffffu))), f32(s16(i32(scroll >> 16u)))) / 4096.0;
 
+    // Cel shading inputs (only read for flagged vertices).
+    let is_toon = (v.skin.x & SKIN_TOON) != 0u;
+    let is_outline = (v.skin.x & SKIN_OUTLINE) != 0u;
+    var lam = 1.0;
+    var bright = 1.0;
+    let nz_a = normal_table[v.skin.x & 0xffu];
+    let nz_e = normal_table[(v.skin.x >> 8u) & 0xffu];
+    let n_model = vec3<f32>(nz_a.x * nz_e.x, nz_a.y * nz_e.x, nz_e.y);
+    let n_posed = (m[0] * n_model.x + m[1] * n_model.y + m[2] * n_model.z).xyz;
+    let n_world = normalize(((*inst).model * vec4<f32>(n_posed, 0.0)).xyz);
+    let n_view = position_world_to_view(world + n_world) - position_world_to_view(world);
+    out.toon = vec4<f32>(select(0.0, select(1.0, 2.0, is_outline), is_toon), 1.0, 1.0, n_view.z);
+
     let mode = (*inst).misc.y;
     if (mode == 1u) {
         out.color = unpack4x8unorm(cpu_colors[(*inst).misc.z + v.vid]) * (255.0 / 128.0);
@@ -140,6 +175,12 @@ fn vertex(v: MobyVertex) -> MobyVertexOutput {
         let f = max(d, d * (*inst).neg_k);
         let s = (*inst).light_colors[0] * f.x + (*inst).light_colors[1] * f.y + (*inst).light_colors[2] * f.z;
         let q = inverseSqrt(np.x * np.x + np.y * np.y + np.z * np.z);
+        let csum = (*inst).light_colors[0].xyz + (*inst).light_colors[1].xyz + (*inst).light_colors[2].xyz;
+        let lw = vec3<f32>(0.299, 0.587, 0.114);
+        lam = clamp(dot(s.xyz * q, lw) / max(dot(csum, lw), 0.0001), 0.0, 1.0);
+        bright = dot((*inst).ambient.xyz / 128.0 + csum, lw);
+        out.toon.y = lam;
+        out.toon.z = bright;
         let c = vec4<f32>((*inst).ambient.xyz, alpha) + floor(s * q * 128.0);
         let mult = vec4<i32>(unpack4x8unorm(v.skin.w) * 255.0 + 0.5);
         let h = vec4<i32>(s16(i32(c.x)), s16(i32(c.y)), s16(i32(c.z)), s16(i32(c.w)));
@@ -174,6 +215,17 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn fragment(in: MobyVertexOutput) -> @location(0) vec4<f32> {
     let t = textureSample(tex, tex_sampler, in.uv);
     var rgb = min(t.rgb * in.color.rgb, vec3<f32>(1.0));
+    if (in.toon.x > 1.5) {
+        // Outline shell: only the half whose normal faces away from the camera, flat darkened albedo.
+        if (in.toon.w > 0.0) { discard; }
+        rgb = t.rgb * OUTLINE_TINT;
+    } else if (in.toon.x > 0.5) {
+        let band = smoothstep(TOON_THR - TOON_SOFT, TOON_THR + TOON_SOFT, in.toon.y);
+        let level = mix(1.0, clamp(in.toon.z, 0.6, 1.3), 0.35);
+        let shade = mix(TOON_SHADOW, vec3<f32>(1.0), band);
+        let rim = pow(1.0 - clamp(abs(in.toon.w), 0.0, 1.0), 3.0) * TOON_RIM * (1.0 - 0.6 * band);
+        rgb = min(t.rgb * shade * (level * TOON_GAIN) + vec3<f32>(0.80, 0.90, 1.0) * rim * 0.25, vec3<f32>(1.0));
+    }
     if (fog.color.w > 0.5) {
         rgb = mix(fog.color.rgb, rgb, in.fog);
     }

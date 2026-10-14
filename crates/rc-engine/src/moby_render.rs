@@ -91,6 +91,11 @@ pub const ATTRIBUTE_MOBY_SKIN: MeshVertexAttribute = MeshVertexAttribute::new("M
 /// Skin word x bit: the vertex is in a glow packet (index ≥ class byte 0xa for the high LOD, 0xb for the low one), whose
 /// colour MobyProc's glow list replaces with the moby's glow word (crate::moby_lod module doc, moby.wgsl).
 pub const SKIN_GLOW: u32 = 1 << 24;
+/// Skin word x bits of a replacement hero model's vertices (`hero_model`; the submesh carries the marker in its
+/// `initial_texture`, which is only read while parsing): cel shading in moby.wgsl, and the outline shell's vertices
+/// (a second submesh, pre-displaced along smoothed normals; the shader draws only its back half, flat dark).
+pub const SKIN_TOON: u32 = 1 << 25;
+pub const SKIN_OUTLINE: u32 = 1 << 26;
 /// Per vertex: index of the (packet, vertex) in the class's high-LOD list (CPU colour table index).
 pub const ATTRIBUTE_MOBY_VID: MeshVertexAttribute = MeshVertexAttribute::new("MobyVid", 0x4d4f_4232, VertexFormat::Uint32);
 
@@ -825,6 +830,11 @@ fn build_parts(class: &LevelMobyClass, lod: &[MobySubmesh], identity: bool, glow
     let mut by_tex: BTreeMap<(usize, bool), B> = BTreeMap::new();
     for (si, sub) in lod.iter().enumerate() {
         let glow = si >= glow_from;
+        let toon_flags = match sub.initial_texture {
+            crate::hero_model::TOON_OUTLINE => SKIN_TOON | SKIN_OUTLINE,
+            crate::hero_model::TOON_BODY => SKIN_TOON,
+            _ => 0,
+        };
         for t in &sub.triangles {
             let Some(tex) = part_texture(class, t.texture) else { continue };
             let b = by_tex.entry((tex, glow)).or_default();
@@ -842,7 +852,7 @@ fn build_parts(class: &LevelMobyClass, lod: &[MobySubmesh], identity: bool, glow
                     b.alpha = Some(b.alpha.map_or(AlphaRange::of([m[3]]), |r| r.union(AlphaRange::of([m[3]]))));
                     let count = if identity { 0 } else { sk.count as u32 };
                     b.skin.push([
-                        vx.normal_azimuth as u32 | (vx.normal_elevation as u32) << 8 | count << 16 | if glow { SKIN_GLOW } else { 0 },
+                        vx.normal_azimuth as u32 | (vx.normal_elevation as u32) << 8 | count << 16 | if glow { SKIN_GLOW } else { 0 } | toon_flags,
                         sk.joints[0] as u32 | (sk.joints[1] as u32) << 8 | (sk.joints[2] as u32) << 16,
                         sk.weights[0] as u32 | (sk.weights[1] as u32) << 10 | (sk.weights[2] as u32) << 20,
                         u32::from_le_bytes(m),

@@ -40,7 +40,9 @@
 //! [`LAUMA_SQUASH`]) how much of his squash and stretch scale keys she takes: 1 is his full motion, 0 none.
 //! `RC_LAUMA_JIGGLE=<f>` (default 1, 0 to 2) is how much her cape, back train, hair and pendants swing on their spring strands
 //! (0: rigid), `RC_LAUMA_JIGGLE_STIFF=<f>` (default 1) speeds the springs; the bust has its own pair, `RC_LAUMA_BUST=<f>` and
-//! `RC_LAUMA_BUST_STIFF=<f>` (same ranges and defaults), so either can be turned up or off alone; `RC_LAUMA_BUST_GROW=<f>`
+//! `RC_LAUMA_BUST_STIFF=<f>` (same ranges and defaults), so either can be turned up or off alone; `RC_LAUMA_TOON=0` turns off her Genshin-style
+//! cel shading and outline, `RC_LAUMA_OUTLINE=<metres>` (default 0.010, 0 = none) is the outline's thickness and
+//! `RC_LAUMA_OUTLINE_FACE=<f>` (default 0.5) how much thinner the face's line is; `RC_LAUMA_BUST_GROW=<f>`
 //! (default 0.12, 0 = off) is how much her bust grows with each consecutive side flip, up to `RC_LAUMA_BUST_GROW_MAX` (default 2) times
 //! its size, and a back flip (or any other move) resets it; `RC_LAUMA_FLOOR=0` turns the floor guard off,
 //! `RC_LAUMA_FLOOR_SNAP=<metres>` (default 0.05) is how far above the floor a hovering foot is lowered onto it,
@@ -330,6 +332,95 @@ fn normal_bytes(n: [f32; 3]) -> (u8, u8) {
     let azimuth = (y.atan2(x) / step).round() as i32;
     let elevation = (z.clamp(-1.0, 1.0).asin() / step).round() as i32;
     ((azimuth & 0xff) as u8, (elevation & 0xff) as u8)
+}
+
+/// Markers for the shader (`moby.wgsl`, [`crate::moby_render::SKIN_TOON`]), carried in a submesh's `initial_texture` (only
+/// read while parsing, so free at run time): her body is cel shaded, and the outline shell is a second submesh.
+pub const TOON_BODY: i32 = -1000;
+pub const TOON_OUTLINE: i32 = -1001;
+
+/// Materials that get an outline: the face skin, the hair and head ornaments, the body and the baked skin. Not the eyes
+/// (6, 7), the small face cards, or the cloth (15), which are thin sheets whose shell would double them.
+const OUTLINE_MATERIALS: [u32; 7] = [0, 8, 9, 10, 11, 12, 13];
+/// The face skin's outline is this much thinner than the rest's (the face needs a lighter line).
+const OUTLINE_FACE_MATERIAL: u32 = 0;
+
+/// The outline shell: her mesh again with every vertex pushed out along its smoothed normal (the average over vertices
+/// at the same position, so the hull does not tear at UV seams or hard edges) by `thickness` metres (`face_scale` times
+/// that for vertices only the face skin uses), as a second packet. The shader draws only the half of it whose normal
+/// faces away from the camera, flat dark: the classic inverted hull, with the facing test on the normal because the
+/// moby pipeline does not cull. Returns `None` when no outline material has a triangle.
+fn build_outline(a: &Asset, fit: &Fit, inv: f32, skin_of: &dyn Fn(usize) -> MobySkin, thickness: f32, face_scale: f32) -> Option<MobySubmesh> {
+    let tris: Vec<[u32; 4]> = a.tris.iter().copied().filter(|t| OUTLINE_MATERIALS.contains(&t[3])).collect();
+    if tris.is_empty() {
+        return None;
+    }
+    let key = |p: &[f32; 3]| [(p[0] * 2000.0).round() as i32, (p[1] * 2000.0).round() as i32, (p[2] * 2000.0).round() as i32];
+    let mut sum: std::collections::HashMap<[i32; 3], [f32; 3]> = std::collections::HashMap::new();
+    for (p, n) in a.pos.iter().zip(&a.nrm) {
+        let e = sum.entry(key(p)).or_insert([0.0; 3]);
+        for k in 0..3 {
+            e[k] += n[k];
+        }
+    }
+    let (mut face, mut other) = (vec![false; a.pos.len()], vec![false; a.pos.len()]);
+    for t in &tris {
+        for &v in &t[..3] {
+            if t[3] == OUTLINE_FACE_MATERIAL { face[v as usize] = true } else { other[v as usize] = true }
+        }
+    }
+    let vertices = a
+        .pos
+        .iter()
+        .zip(&a.uv)
+        .enumerate()
+        .map(|(i, (p, t))| {
+            let s = sum[&key(p)];
+            let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt().max(1e-6);
+            let n = [s[0] / len, s[1] / len, s[2] / len];
+            let width = thickness * if face[i] && !other[i] { face_scale } else { 1.0 } / fit.scale;
+            let q = [p[0] + n[0] * width, p[1] + n[1] * width, p[2] + n[2] * width];
+            let (x, y) = (q[0] * fit.cos - q[1] * fit.sin, q[0] * fit.sin + q[1] * fit.cos);
+            let packed = [x * fit.scale * inv, y * fit.scale * inv, (q[2] * fit.scale + fit.dz) * inv].map(|c| c.round().clamp(-32768.0, 32767.0));
+            let (normal_azimuth, normal_elevation) = normal_bytes([n[0] * fit.cos - n[1] * fit.sin, n[0] * fit.sin + n[1] * fit.cos, n[2]]);
+            let skin = skin_of(i);
+            MobyVertex {
+                raw: [0; 8],
+                normal_azimuth,
+                normal_elevation,
+                x: packed[0] as i16,
+                y: packed[1] as i16,
+                z: packed[2] as i16,
+                id: (i & 0x1ff) as u16,
+                kind: match skin.count {
+                    2 => MobyVertexKind::TwoWay,
+                    3 => MobyVertexKind::ThreeWay,
+                    _ => MobyVertexKind::Single,
+                },
+                duplicate: false,
+                skin,
+                st: [(t[0] * 4096.0).round() as i16, (t[1] * 4096.0).round() as i16],
+            }
+        })
+        .collect();
+    Some(MobySubmesh {
+        entry: Default::default(),
+        vertex_table: Default::default(),
+        metal_header: Default::default(),
+        transfers: Vec::new(),
+        duplicates: Vec::new(),
+        raw_vertices: Vec::new(),
+        rgba_multipliers: Vec::new(),
+        vertices,
+        st: Vec::new(),
+        index_bytes: Vec::new(),
+        secret_indices: Vec::new(),
+        texture_indices: Vec::new(),
+        initial_texture: TOON_OUTLINE,
+        unresolved_duplicates: 0,
+        triangles: tris.iter().map(|t| MobyTriangle { a: t[0], b: t[1], c: t[2], texture: t[3] as i32 }).collect(),
+        is_metal: false,
+    })
 }
 
 /// The fitted placement: yaw about the vertical axis, uniform scale and the height shift, in world units.
@@ -762,7 +853,19 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
         },
     };
     let skin_of = |i: usize| rig.map_or(single, |r| r.skin[i]);
-    let (sub, clamped) = build_submesh(asset, &fit, 1.0 / unit, &skin_of);
+    let (mut sub, clamped) = build_submesh(asset, &fit, 1.0 / unit, &skin_of);
+    // Genshin-style look: RC_LAUMA_TOON=0 turns cel shading and the outline off; RC_LAUMA_OUTLINE=<metres, default 0.010,
+    // 0 = no outline> is the outline's thickness at her normal size (it grows with RC_LAUMA_SCALE; the face's line is
+    // RC_LAUMA_OUTLINE_FACE=<default 0.5> times as thick). The shell is built here, so these are read at load.
+    let toon = env_f32("RC_LAUMA_TOON", 1.0) > 0.5;
+    let outline_m = env_f32("RC_LAUMA_OUTLINE", 0.010);
+    let outline_m = if outline_m.is_finite() { outline_m.clamp(0.0, 0.05) } else { 0.010 };
+    let face_scale = env_f32("RC_LAUMA_OUTLINE_FACE", 0.5);
+    let face_scale = if face_scale.is_finite() { face_scale.clamp(0.0, 2.0) } else { 0.5 };
+    let shell = if toon && outline_m > 0.0 { build_outline(asset, &fit, 1.0 / unit, &skin_of, outline_m * total, face_scale) } else { None };
+    if toon {
+        sub.initial_texture = TOON_BODY;
+    }
     // His skeleton in her proportions, checked before anything changes.
     let plan = match rig {
         Some(r) => {
@@ -787,12 +890,17 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     }
     let lc = &mut mobys.classes[ci];
     lc.entry.textures = slots;
-    lc.class.high_lod = vec![sub.clone()];
-    lc.class.low_lod = vec![sub];
+    lc.class.high_lod = std::iter::once(sub.clone()).chain(shell.clone()).collect();
+    lc.class.low_lod = std::iter::once(sub).chain(shell.clone()).collect();
     lc.class.metal.clear();
     // No glow packets (the glow indices would otherwise point into Ratchet's lists).
     lc.class.header.rac1_byte_a = 0xff;
     lc.class.header.rac1_byte_b = 0xff;
+    println!(
+        "hero model: cel shading {}, outline {}",
+        if toon { "on" } else { "off (RC_LAUMA_TOON=0)" },
+        if shell.is_some() { format!("{:.1} mm ({} triangles)", outline_m * total * 1000.0, lc.class.high_lod.get(1).map_or(0, |s| s.triangles.len())) } else { "off".to_string() }
+    );
     let size_source = match std::env::var("RC_LAUMA_SCALE") {
         Ok(v) => format!("RC_LAUMA_SCALE={v} set in the environment"),
         Err(_) => "RC_LAUMA_SCALE not set".to_string(),
@@ -805,7 +913,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     // translation and scale, so no key, layer or modifier of his can stretch her neck.
     let snap_m = env_f32("RC_LAUMA_FLOOR_SNAP", 0.0);
     let snap_m = (if snap_m.is_finite() { snap_m.clamp(0.0, 0.5) } else { 0.05 }) * total;
-    let pin_mode = std::env::var("RC_LAUMA_PIN").unwrap_or_else(|_| "all".to_string());    
+    let pin_mode = std::env::var("RC_LAUMA_PIN").unwrap_or_default();
     let guard = rig.and_then(|r| {
         let n = mobys.anim[ci].joint_count;
         let strand_joints: Vec<u8> = r.jiggle.iter().map(|s| s.joint).collect();
@@ -993,6 +1101,35 @@ mod tests {
         let mut truncated = rig([256, 0], 1, 1);
         truncated.pop();
         assert!(parse(&truncated).is_err(), "truncated");
+    }
+
+    /// The outline shell keeps only the outline materials' triangles and pushes each vertex out along its smoothed normal:
+    /// the two vertices at one position get the same (averaged) normal, so the hull stays closed.
+    #[test]
+    fn outline_shell_is_closed_and_selective() {
+        let asset = Asset {
+            pos: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 0.0]],
+            nrm: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [1.0, 0.0, 0.0]],
+            uv: vec![[0.0; 2]; 4],
+            tris: vec![[0, 1, 2, 12], [3, 1, 2, 6]],
+            mat_tex: [0; 16],
+            textures: Vec::new(),
+            rig: None,
+        };
+        let fit = Fit { cos: 1.0, sin: 0.0, scale: 1.0, dz: 0.0 };
+        let skin = |_: usize| MobySkin::default();
+        let shell = build_outline(&asset, &fit, 1000.0, &skin, 0.01, 0.5).expect("a shell");
+        assert_eq!(shell.initial_texture, TOON_OUTLINE);
+        assert_eq!(shell.triangles.len(), 1, "the eye material (6) has no outline");
+        // vertices 0 and 3 share a position: their normals average to (1,0,1)/sqrt2, so both move the same way
+        let (v0, v3) = (&shell.vertices[0], &shell.vertices[3]);
+        assert_eq!((v0.x, v0.y, v0.z), (v3.x, v3.y, v3.z), "coincident vertices move together");
+        assert_eq!((v0.x, v0.z), (7, 7), "0.01 m along (1,0,1)/sqrt2 is 7 packed units each");
+        // a vertex only a face-material triangle uses gets the thinner line
+        let face = Asset { tris: vec![[0, 1, 2, 0]], ..asset };
+        let thin = build_outline(&face, &fit, 1000.0, &skin, 0.01, 0.5).unwrap();
+        assert_eq!(thin.vertices[1].z, 5, "face skin: half of 10");
+        assert!(build_outline(&Asset { tris: vec![[0, 1, 2, 15]], ..face }, &fit, 1000.0, &skin, 0.01, 0.5).is_none(), "cloth has none");
     }
 
     /// A version 3 file adds the jiggle strands; a spring out of range is refused.
