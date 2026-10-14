@@ -178,7 +178,10 @@ impl RunOut {
 
 /// Novalis with its mobys, Ratchet at `at` (yaw), `hand` (8 the wrench, 10 the glove with 10 bombs), `input(t)` for
 /// `ticks` ticks.
-fn run(lv: &Lv, at: ([f32; 3], f32), hand: i32, input: &dyn Fn(u32) -> PadInput, ticks: u32) -> RunOut {
+fn run(lv: &Lv, at: ([f32; 3], f32), hand: i32, input: &dyn Fn(u32) -> PadInput, ticks: u32) -> RunOut { run_with(lv, at, hand, input, ticks, &[]) }
+
+/// [`run`] with the persistent death bits (`0x14c190`) of these spawn ids of Novalis set, as a later visit has them.
+fn run_with(lv: &Lv, at: ([f32; 3], f32), hand: i32, input: &dyn Fn(u32) -> PadInput, ticks: u32, death: &[i16]) -> RunOut {
     let classes = Arc::new(ClassTable { classes: lv.classes.classes.clone() });
     let mut ct = ClassTable { classes: lv.classes.classes.clone() };
     let statics = load_level_mobys(&lv.instances, &mut ct, &lv.pvars, &lv.tests);
@@ -202,6 +205,7 @@ fn run(lv: &Lv, at: ([f32; 3], f32), hand: i32, input: &dyn Fn(u32) -> PadInput,
     }
     let mut svc = Services::new();
     svc.level = 1;
+    for &sid in death { svc.save.death.insert((1, sid)); }
     svc.set_splines(&lv.splines);
     svc.groups = statics.groups(&lv.gp);
     svc.set_moby_collision(lv.coll_blobs.clone());
@@ -395,11 +399,31 @@ fn novalis_trooper_dies_to_the_bomb() {
     eprintln!("trooper 310 states {st:?}; spawned {:?}", out.spawned);
     assert!(out.spawned.get(&121).copied().unwrap_or(0) > 0, "no bomb thrown");
     assert_eq!(*st.last().unwrap(), 0xfd, "not killed ({st:?})");
-    // A bomb kill on the ground ends the death flight in its first tick (the flight's sphere touches the ground).
+    // The blast (`0x26f8f8`: push 1 away from the bomb, 1 up) throws it: the death flight (0xe) carries it away
+    // before it explodes, as a wrench kill does.
+    let flight: Vec<[f32; 3]> = (0..out.rows.len()).filter_map(|i| out.at(i, t)).filter(|e| e.0 == 0xe).map(|e| e.2).collect();
+    let travel = flight.first().zip(flight.last()).map_or(0.0, |(a, b)| ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2)).sqrt());
+    eprintln!("death flight: {} ticks, {travel:.2} units across", flight.len());
+    assert!(flight.len() > 1 && travel > 0.5, "no death flight away from the blast ({} ticks, {travel:.2} units)", flight.len());
     let pieces: usize = [1736, 1737, 1738, 1770].iter().map(|c| out.spawned.get(c).copied().unwrap_or(0)).sum();
     assert!(pieces >= 4, "no body pieces ({pieces})");
     let again = run(&lv, at, 10, &input, 1000);
     assert_eq!(out.rows, again.rows, "not deterministic");
+}
+
+/// The bridge fly-by on a later visit (its spawn id's persistent death bit set when it ended): no sequence, the
+/// troopers drop in at once and the gunship is deleted (0x2f7728).
+#[test]
+fn novalis_gunship_bridge_fly_by_plays_once() {
+    let Some(lv) = load() else { eprintln!("skipped: no extracted/"); return };
+    let sid = lv.instances[695].spawn_id as i16;
+    let at = ([72.26054, 189.26149, 47.0], 1.09);
+    let out = run_with(&lv, at, 8, &|_| PadInput::neutral(), 120, &[sid]);
+    let g = out.moby(695);
+    eprintln!("gunship 695 (spawn id {sid}) states {:?}; script requests {:?}", out.states(g), out.scripts);
+    assert!(out.scripts.is_empty(), "the fly-by played again: {:?}", out.scripts);
+    assert!(out.rows.iter().all(|r| r.hero_state != 0x72), "Ratchet held for a fly-by already seen");
+    assert_eq!(*out.states(g).last().unwrap(), 0xfd, "the gunship was not deleted");
 }
 
 /// The bridge fly-by: Ratchet enters cuboid 22; gunship 695 starts its scripted sequence (Ratchet's state 0x72 and the

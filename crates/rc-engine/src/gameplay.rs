@@ -945,7 +945,9 @@ fn class_joint_data_where(lv: &crate::level_load::LoadedLevel, want: impl Fn(i16
     let core = rc_formats::level::parse_level_core(&read("core_index.bin")?, data.len()).context("parsing core index")?;
     for c in wanted {
         let name = format!("moby_class/{:04}", c.o_class);
-        let blk = core.blocks.iter().find(|b| b.name == name).ok_or_else(|| anyhow!("no {name} block"))?;
+        // A class appended from the spaceships file (the loader's ship) has no block in the core: its lists come from
+        // that file (crate::travel_render::ship_joint_lists).
+        let Some(blk) = core.blocks.iter().find(|b| b.name == name) else { continue };
         let blob = data.get(blk.offset..blk.offset + blk.size).ok_or_else(|| anyhow!("{name} out of range"))?;
         let lists = (0..256).map_while(|l| rc_formats::gadget::joint_list(blob, &c.class.header, l).ok()).collect();
         out.insert(c.o_class as i16, lists);
@@ -1261,8 +1263,10 @@ fn setup(
         ship: crate::moby_spawn::ship_index_for(level_index) as i16,
         setup: rc_game::travel::FlyAwaySetup::parse(&lv.gameplay),
         landing_spot: Some(landing_spot),
+        adopted: crate::level_load::ship_adopted(),
         ..Default::default()
     };
+    adopt_placed_ship(&mut game.mobys, &mut svc.travel, &classes, level_index);
     // The help system (rc_game::help): the level text and small font it sizes with, the help log's id table.
     help_setup(&mut svc, lv, level_index);
     // The map system's level entry (rc_game::map, FUN_0025a4c0): tables, the level's map file, its fog mask.
@@ -1331,6 +1335,14 @@ fn setup(
             game.hero.set_body_joints(bodies);
         }
         Err(e) => eprintln!("gameplay: no body joint lists ({e:#}): Clank / Giant Clank's joint points sit at the body's origin"),
+    }
+    // A ship class the level itself carries (Gemlik's placed 533, which `rc_game::travel::ship::adopt` makes the ship): its
+    // joint lists from the level's class, as for any class (the canopy glass sits on joint list 0).
+    match class_joint_data_where(lv, |o| rc_game::travel::ship::CLASSES.contains(&o)) {
+        Ok(m) => {
+            for (o, l) in m { svc.joint_lists.entry(o).or_insert_with(|| l.into_iter().map(|(a, _)| a).collect()); }
+        }
+        Err(e) => eprintln!("gameplay: the level's ship classes: no joint lists ({e:#})"),
     }
     if let Some(id) = ship_id {
         let oc = game.mobys.mobys[id].o_class;
@@ -1771,6 +1783,8 @@ fn death_reload(p: &mut Play, lv: &crate::level_load::LoadedLevel, state: Option
     // 0x13e030: the loader's new ship (`ShipUpdate` runs on it alone: its glass, its hatch prompt). The compacted table
     // moves its id once a placed moby is gone; the old id left the ship without its update after a death.
     p.svc.travel.moby = ship_id;
+    let classes = p.classes.clone();
+    adopt_placed_ship(&mut p.game.mobys, &mut p.svc.travel, &classes, p.level);
     p.moby_to_instance = statics.moby_to_instance.clone();
     let n_static = p.game.mobys.first_dynamic;
     let mut driven: Vec<(MobyId, usize, Option<usize>)> = (0..n_static)
@@ -1985,10 +1999,36 @@ fn debug_dump(
         if d > radius { continue; }
         let (sv, st) = visible.get(&(id as u32)).copied().unwrap_or((0, 0));
         println!(
-            "dump:   moby {id:4} class {:5} state {:#04x} mode {:#06x} coll {} pos ({:.2}, {:.2}, {:.2}) dist {:.1} meshes {sv}/{st} visible",
-            m.o_class, m.state, m.mode, m.has_collision, m.position[0], m.position[1], m.position[2], d
+            "dump:   moby {id:4} class {:5} state {:#04x} mode {:#06x} coll {} pos ({:.2}, {:.2}, {:.2}) scale {:.4} dist {:.1} meshes {sv}/{st} visible (+0x31 {} alpha {:#04x} draw dist {} occlusion {:#06x})",
+            m.o_class, m.state, m.mode, m.has_collision, m.position[0], m.position[1], m.position[2], m.scale, d, m.visible, m.alpha, m.draw_dist, m.occlusion
         );
     }
+    // The ship (`ShipUpdate`'s moby 0x13e030): its glass registration and the joint-list-0 matrix the glass is drawn at.
+    let cbs = &p.svc.draw_callbacks;
+    if let Some(id) = p.svc.travel.moby {
+        let glass = cbs.list1.iter().chain(&cbs.list2).any(|&(c, i)| i == id && c == rc_game::moby_update::classes::draw_callbacks::Callback::ShipGlass);
+        let o = p.game.mobys.mobys.get(id).map_or(-1, |m| m.o_class);
+        let lists = p.svc.joint_lists.get(&o).map(|l| l.iter().map(|c| c.len()).collect::<Vec<_>>());
+        let at = cbs.matrices.get(&id).map(|m| format!("({:.2}, {:.2}, {:.2})", m[3][0], m[3][1], m[3][2]));
+        println!("dump: ship moby {id} class {o} ship {} adopted {} glass registered {glass} at {} joint lists {lists:?} engine ship {:?}", p.svc.travel.ship, p.svc.travel.adopted, at.unwrap_or_else(|| "-".into()), p.ship);
+    }
+    let all: Vec<(i16, Option<usize>)> = rc_game::travel::ship::CLASSES.iter().map(|&c| (c, p.svc.joint_lists.get(&c).map(Vec::len))).collect();
+    println!("dump: ship classes' joint lists (class, lists): {all:?}");
+}
+
+/// `InitLevelRenderGlobals` 0x255958 on level 13 with ship 2 and 0x160540 set: the placed ship of class `0x160550` (ship 2's
+/// 533) is adopted (`0x2a2360`: `rc_game::travel::ship::adopt_table`) and cut to sequence 1 (`hard_cut(m, 1, 0)`), in place of
+/// the ship the loader would create (crate::moby_spawn creates none then).
+fn adopt_placed_ship(table: &mut MobyTable, travel: &mut rc_game::travel::ShipGlobals, classes: &ClassTable, level: u32) {
+    use rc_game::moby_update::services::ClassData;
+    const PLACED: i16 = 533;
+    if level != 13 || travel.ship != 2 || !travel.adopted { return; }
+    let Some(id) = table.mobys.iter().position(|m| m.o_class == PLACED && m.state < 0xfd) else { return };
+    let coll = classes.info(PLACED).is_some_and(|i| i.has_collision);
+    rc_game::travel::ship::adopt_table(table, travel, level, id, coll);
+    let a = &mut table.mobys[id].anim;
+    (a.seq_a, a.seq_b, a.frame_a, a.frame_b, a.t) = (1, 1, 0, 0, 0.0);
+    println!("gameplay: level 13 with ship 2 after the escape: the placed ship 533 (moby {id}) adopted");
 }
 
 /// The entities of instances a death reload made spawn (their level load had hidden them: `SpawnHidden`).
@@ -2496,6 +2536,8 @@ fn tick(
     }
 
     publish_anim(p, anim.as_deref_mut());
+    // 0x160540 (a placed ship adopted: Gemlik's 533 after the escape) holds for the session.
+    if p.svc.travel.adopted && !crate::level_load::ship_adopted() { crate::level_load::set_ship_adopted(); }
     let hm = &p.game.mobys.mobys[p.hero_id];
     if let Some(a) = attach.as_mut() { a.set_host(rows_bits(&hm.rows), [hm.position[0], hm.position[1], hm.position[2]]); }
     if let Some(v) = view.as_mut() {

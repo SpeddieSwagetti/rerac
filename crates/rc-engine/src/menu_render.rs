@@ -650,8 +650,9 @@ fn menu_frame(
                 let (level, t) = (gs.global.level, gs.global.play_time);
                 rc_game::help::bump(&mut gs.global.move_help[9], level, t);
             }
-            // 0x2aba68: the pause tests (rc_game::menus::mode::in_level_trigger): Giant Clank's / the vehicles' / the
-            // riders' "Quit?" dialogs (mode_freezeInit 4 / 1 / 0), Start / pad lost → the pause menu, Select | R3 → the map.
+            // 0x2aba68: the pause tests (rc_game::menus::mode::in_level_trigger): Giant Clank's / the vehicles' and riders'
+            // "Quit?" dialogs (mode_freezeInit 4 / 1), the Hoverboard's "Quit Race?" (0), Start / pad lost → the pause menu,
+            // Select | R3 → the map.
             let h = &play.game.hero;
             let t = rc_game::menus::mode::TriggerIn {
                 mode: mm.state.mode.raw(),
@@ -804,6 +805,17 @@ fn menu_frame(
                 if let Some(req) = out.equip.filter(|r| r.iter().any(Option::is_some)) {
                     rc_game::inventory::apply_close_requests(sess, &req);
                     println!("menus: frame {frame}: equip requests (hand, feet, head, back) {req:?}");
+                }
+                // ✕ on the Drone Device (0x28f260): with its ammo (`0x249530(0x18)`), 0x141345 = 1 (launched by the first
+                // tick after the menu) and 0x141347 = min(0x141347 + ammo, 6) (the 3D Ratchet's drones: crate::menu_models).
+                if out.drone {
+                    let n = play.game.hero.weapons.has_ammo(rc_game::moby_update::classes::drone::DRONE_DEVICE);
+                    if n != 0 {
+                        sess.drone = true;
+                        let d = &mut play.svc.drones;
+                        d.live = (d.live as i32 + n).min(6) as u8;
+                        println!("menus: frame {frame}: drone device: {} drones shown, launch requested", d.live);
+                    }
                 }
                 if let Some(x) = out.exit {
                     // The map system back to the level (its view, zooms and a Map-o-Matic switch kept).
