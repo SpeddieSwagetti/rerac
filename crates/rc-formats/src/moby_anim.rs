@@ -1153,19 +1153,21 @@ pub struct JiggleStrand {
     pub freq: f32,
     pub damp: f32,
     pub max_deg: f32,
+    /// 0: cloth and hair, 1: bust; each group has its own amount and stiffness in the setup.
+    pub group: u8,
     pub pivot: [f32; 3],
     pub tip: [f32; 3],
 }
 
-/// The strands of the class (identified like [`FloorGuard`]), how much of the spring shows (`amount`: 0 = rigid,
-/// 1 = as tuned, up to 2) and a frequency multiplier (`stiffness`).
+/// The strands of the class (identified like [`FloorGuard`]); per group (cloth and hair, bust) how much of the spring shows
+/// (`amount`: 0 = rigid, 1 = as tuned, up to 2) and a frequency multiplier (`stiffness`).
 #[derive(Clone, Debug)]
 pub struct JiggleSetup {
     pub joint_count: usize,
     pub rest1: [u32; 3],
     pub strands: Vec<JiggleStrand>,
-    pub amount: f32,
-    pub stiffness: f32,
+    pub amount: [f32; 2],
+    pub stiffness: [f32; 2],
 }
 
 struct JiggleSim {
@@ -1190,6 +1192,55 @@ pub fn set_jiggle(setup: Option<JiggleSetup>) {
     *JIGGLE.lock().unwrap_or_else(|e| e.into_inner()) = sim;
     JIGGLE_ON.store(on, std::sync::atomic::Ordering::Release);
 }
+
+/// The bust's growth under consecutive side flips (cosmetic: it never feeds back into the simulation). Each side flip
+/// (move code 1 or 2 of `rc-game`'s `cheats::classify`) adds `per_flip` to the size, up to `max`; a back flip (code 3), or
+/// any other recognised move, ends the streak and the size eases back to 1. The size eases (up slowly, back quickly) and
+/// scales the group 1 jiggle strands about the bust's centre in [`apply_jiggle`].
+struct BustGrow {
+    per_flip: f32,
+    max: f32,
+    streak: u32,
+    level: f32,
+}
+
+static BUST_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static BUST: std::sync::Mutex<Option<BustGrow>> = std::sync::Mutex::new(None);
+/// The bust's current size factor (f32 bits), 1 = her normal size.
+static BUST_SCALE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0x3f80_0000);
+
+/// Turns the growth on with (size added per consecutive side flip, largest size), or off with `None`; either way the size
+/// and the streak start again.
+pub fn set_bust_growth(cfg: Option<(f32, f32)>) {
+    let on = cfg.is_some();
+    *BUST.lock().unwrap_or_else(|e| e.into_inner()) = cfg.map(|(per_flip, max)| BustGrow { per_flip, max, streak: 0, level: 1.0 });
+    BUST_SCALE.store(1.0f32.to_bits(), std::sync::atomic::Ordering::Release);
+    BUST_ON.store(on, std::sync::atomic::Ordering::Release);
+}
+
+/// Called once per game tick with that tick's move code (`cheats::classify`; 0: none).
+pub fn bust_move(code: u8) {
+    if !BUST_ON.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let mut guard = BUST.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(g) = guard.as_mut() else { return };
+    match code {
+        1 | 2 => g.streak += 1,
+        0 => {}
+        _ => g.streak = 0, // the back flip (3) and every other move end the streak
+    }
+    let target = (1.0 + g.per_flip * g.streak as f32).min(g.max);
+    let rate = if target < g.level { 0.15 } else { 0.06 };
+    g.level += (target - g.level) * rate;
+    if (target - g.level).abs() < 1e-3 {
+        g.level = target;
+    }
+    BUST_SCALE.store(g.level.to_bits(), std::sync::atomic::Ordering::Release);
+}
+
+/// The bust's current size factor.
+pub fn bust_scale() -> f32 { f32::from_bits(BUST_SCALE.load(std::sync::atomic::Ordering::Acquire)) }
 
 fn point_through(f: &Rows, p: [f32; 3]) -> [f32; 3] {
     [0, 1, 2].map(|k| p[0] * f[0][k] + p[1] * f[1][k] + p[2] * f[2][k] + f[3][k])
@@ -1249,6 +1300,8 @@ fn apply_jiggle(class: &MobyAnimClass, out: &mut [Rows]) {
     let (amount, stiffness) = (sim.setup.amount, sim.setup.stiffness);
     for i in 0..sim.setup.strands.len() {
         let s = sim.setup.strands[i];
+        let gi = (s.group as usize).min(1);
+        let (amount, stiffness) = (amount[gi], stiffness[gi]);
         let (a, jn) = (s.anchor as usize, s.joint as usize);
         if a >= out.len() || jn >= out.len() {
             continue;
@@ -1296,6 +1349,20 @@ fn apply_jiggle(class: &MobyAnimClass, out: &mut [Rows]) {
         let ul = norm3(u);
         u = if ul > 1e-6 { u.map(|c| c / ul) } else { u0 };
         out[jn] = rotate_rows_about(&base, apt, u0, u);
+        // The bust's growth: the strand's palette scaled about the bust's centre (the swung free end).
+        let bs = if s.group == 1 { bust_scale() } else { 1.0 };
+        if bs != 1.0 {
+            let c = [apt[0] + u[0] * len, apt[1] + u[1] * len, apt[2] + u[2] * len];
+            let f = &mut out[jn];
+            for r in 0..3 {
+                for k in 0..3 {
+                    f[r][k] *= bs;
+                }
+            }
+            for k in 0..3 {
+                f[3][k] = (f[3][k] - c[k]) * bs + c[k];
+            }
+        }
     }
     sim.started = true;
 }
@@ -1411,6 +1478,40 @@ mod tests {
         let away = rotate_rows_about(&base, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
         assert!(near(away[3][0], 0.0) && near(away[3][1], 1.0), "a point away from the pivot swings with it: {:?}", away[3]);
         assert_eq!(rotate_rows_about(&base, [0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]), base);
+    }
+
+    /// Side flips add to the size (up to the cap), a back flip or any other move ends the streak, and the size eases.
+    /// The state is global, so this is the only test that touches it.
+    #[test]
+    fn bust_grows_on_consecutive_side_flips_and_resets() {
+        let settle = |n: usize| (0..n).for_each(|_| bust_move(0));
+        set_bust_growth(None);
+        bust_move(1);
+        assert_eq!(bust_scale(), 1.0, "off: nothing happens");
+        set_bust_growth(Some((0.5, 2.0)));
+        bust_move(1);
+        settle(300);
+        assert!((bust_scale() - 1.5).abs() < 1e-3, "one side flip: {}", bust_scale());
+        bust_move(2);
+        settle(300);
+        assert!((bust_scale() - 2.0).abs() < 1e-3, "two: {}", bust_scale());
+        bust_move(1);
+        settle(300);
+        assert!((bust_scale() - 2.0).abs() < 1e-3, "capped at the maximum: {}", bust_scale());
+        bust_move(3);
+        settle(300);
+        assert!((bust_scale() - 1.0).abs() < 1e-3, "a back flip resets: {}", bust_scale());
+        bust_move(1);
+        bust_move(5);
+        settle(300);
+        assert!((bust_scale() - 1.0).abs() < 1e-3, "another move ends the streak: {}", bust_scale());
+        bust_move(1);
+        for _ in 0..5 {
+            bust_move(0);
+        }
+        assert!(bust_scale() > 1.0 && bust_scale() < 1.5, "it eases, it does not jump: {}", bust_scale());
+        set_bust_growth(None);
+        assert_eq!(bust_scale(), 1.0, "turning it off restores the size");
     }
 
     #[test]

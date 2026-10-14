@@ -39,7 +39,10 @@
 //! translation motion (the bob of a walk or run; big moves keep their size, scaled to her legs) and `RC_LAUMA_SQUASH=<f>` (default
 //! [`LAUMA_SQUASH`]) how much of his squash and stretch scale keys she takes: 1 is his full motion, 0 none.
 //! `RC_LAUMA_JIGGLE=<f>` (default 1, 0 to 2) is how much her cape, back train, hair and pendants swing on their spring strands
-//! (0: rigid), `RC_LAUMA_JIGGLE_STIFF=<f>` (default 1) speeds the springs; `RC_LAUMA_FLOOR=0` turns the floor guard off,
+//! (0: rigid), `RC_LAUMA_JIGGLE_STIFF=<f>` (default 1) speeds the springs; the bust has its own pair, `RC_LAUMA_BUST=<f>` and
+//! `RC_LAUMA_BUST_STIFF=<f>` (same ranges and defaults), so either can be turned up or off alone; `RC_LAUMA_BUST_GROW=<f>`
+//! (default 0.12, 0 = off) is how much her bust grows with each consecutive side flip, up to `RC_LAUMA_BUST_GROW_MAX` (default 2) times
+//! its size, and a back flip (or any other move) resets it; `RC_LAUMA_FLOOR=0` turns the floor guard off,
 //! `RC_LAUMA_FLOOR_SNAP=<metres>` (default 0.05) is how far above the floor a hovering foot is lowered onto it, and
 //! `RC_LAUMA_PIN=neck|all|off` (default `neck`) is which joints may not stretch (see `rc_formats::moby_anim::FloorGuard`).
 //! With `RC_MOBY_CPU_LIGHT` the class colours are baked at load before this runs, so Ratchet stays.
@@ -159,12 +162,13 @@ fn parse(data: &[u8]) -> Result<Asset> {
             let ns = r.u32()? as usize;
             ensure!(ns <= 32, "the rig has {ns} jiggle strands");
             for _ in 0..ns {
-                let (joint, anchor, _pad) = (r.u8()?, r.u8()?, r.u16()?);
+                let (joint, anchor, group) = (r.u8()?, r.u8()?, r.u16()?);
                 ensure!((joint as usize) < nj && (anchor as usize) < nj, "a jiggle strand names a joint past the rig");
+                ensure!(group < 2, "a jiggle strand is in group {group}");
                 let [freq, damp, max_deg] = r.floats::<3>(1)?[0];
                 ensure!(freq > 0.0 && freq < 60.0 && (0.0..=2.0).contains(&damp) && max_deg > 0.0 && max_deg <= 90.0, "a jiggle strand's spring is out of range");
                 let (pivot, tip) = (r.floats::<3>(1)?[0], r.floats::<3>(1)?[0]);
-                jiggle.push(JiggleStrand { joint, anchor, freq, damp, max_deg, pivot, tip });
+                jiggle.push(JiggleStrand { joint, anchor, freq, damp, max_deg, group: group as u8, pivot, tip });
             }
         }
         Some(RigData { skin, joints, jiggle })
@@ -774,8 +778,9 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     // holds them rigid; RC_LAUMA_JIGGLE_STIFF=<0.25..4, default 1> speeds the springs up).
     let jiggle = match rig {
         Some(r) if !r.jiggle.is_empty() && mobys.anim[ci].rest.len() > 1 => {
-            let amount = env_f32("RC_LAUMA_JIGGLE", 1.0);
-            let stiffness = env_f32("RC_LAUMA_JIGGLE_STIFF", 1.0);
+            // group 0: cloth and hair; group 1: bust
+            let amount = [env_f32("RC_LAUMA_JIGGLE", 1.0), env_f32("RC_LAUMA_BUST", 1.0)];
+            let stiffness = [env_f32("RC_LAUMA_JIGGLE_STIFF", 1.0), env_f32("RC_LAUMA_BUST_STIFF", 1.0)];
             let n = mobys.anim[ci].joint_count;
             let packed = |p: [f32; 3]| {
                 let (x, y) = (p[0] * fit.cos - p[1] * fit.sin, p[0] * fit.sin + p[1] * fit.cos);
@@ -785,14 +790,23 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
                 joint_count: n,
                 rest1: mobys.anim[ci].rest[1].map(f32::to_bits),
                 strands: r.jiggle.iter().filter(|s| (s.joint as usize) < n && (s.anchor as usize) < n).map(|s| JiggleStrand { pivot: packed(s.pivot), tip: packed(s.tip), ..*s }).collect(),
-                amount: if amount.is_finite() { amount.clamp(0.0, 2.0) } else { 1.0 },
-                stiffness: if stiffness.is_finite() { stiffness.clamp(0.25, 4.0) } else { 1.0 },
+                amount: amount.map(|a| if a.is_finite() { a.clamp(0.0, 2.0) } else { 1.0 }),
+                stiffness: stiffness.map(|s| if s.is_finite() { s.clamp(0.25, 4.0) } else { 1.0 }),
             })
         }
         _ => None,
     };
     let strands = jiggle.as_ref().map_or(0, |j| j.strands.len());
-    let jiggle_amount = jiggle.as_ref().map_or(0.0, |j| j.amount);
+    let jiggle_amount = jiggle.as_ref().map_or([0.0; 2], |j| j.amount);
+    // Bust growth under consecutive side flips (RC_LAUMA_BUST_GROW=<size added per flip, default 0.12; 0 turns it off>,
+    // RC_LAUMA_BUST_GROW_MAX=<largest size, default 2, 1 to 4>); a back flip or any other move resets it.
+    let has_bust = jiggle.as_ref().is_some_and(|j| j.strands.iter().any(|s| s.group == 1));
+    let grow = env_f32("RC_LAUMA_BUST_GROW", 0.12);
+    let grow = if grow.is_finite() { grow.clamp(0.0, 1.0) } else { 0.12 };
+    let grow_max = env_f32("RC_LAUMA_BUST_GROW_MAX", 2.0);
+    let grow_max = if grow_max.is_finite() { grow_max.clamp(1.0, 4.0) } else { 2.0 };
+    let growing = has_bust && grow > 0.0;
+    rc_formats::moby_anim::set_bust_growth(growing.then_some((grow, grow_max)));
     rc_formats::moby_anim::set_jiggle(jiggle);
 
     println!(
@@ -805,7 +819,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
         zmax - zmin,
         unit * 1024.0,
         if clamped > 0 { format!("; {clamped} vertices clamped to the packed range (try RC_LAUMA_SCALE below 1)") } else { String::new() },
-        reshaped.map_or(String::new(), |(keys, layers)| format!("; his skeleton reshaped to her proportions ({keys} translation keys rescaled, {layers} layer classes); floor guard on {} foot points, {} pinned joints; {strands} jiggle strands at {jiggle_amount}", guarded.0, guarded.1)),
+        reshaped.map_or(String::new(), |(keys, layers)| format!("; his skeleton reshaped to her proportions ({keys} translation keys rescaled, {layers} layer classes); floor guard on {} foot points, {} pinned joints; {strands} jiggle strands (RC_LAUMA_JIGGLE {}, RC_LAUMA_BUST {}); bust growth {}", guarded.0, guarded.1, jiggle_amount[0], jiggle_amount[1], if growing { format!("+{grow} per side flip, up to {grow_max}x") } else { "off".to_string() })),
     );
     Ok(())
 }
@@ -931,6 +945,15 @@ mod tests {
         let st = a.rig.as_ref().unwrap().jiggle[0];
         assert_eq!((st.joint, st.anchor, st.freq, st.max_deg, st.pivot, st.tip), (1, 0, 3.0, 30.0, [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]));
         assert!(parse(&build(0.0)).is_err(), "a zero frequency is refused");
+        assert_eq!(st.group, 0);
+        let with_group = |g: u8| {
+            let mut f = build(3.0);
+            let at = f.len() - 40 + 2; // the strand's u16 group
+            f[at] = g;
+            f
+        };
+        assert_eq!(parse(&with_group(1)).unwrap().rig.as_ref().unwrap().jiggle[0].group, 1, "the bust group");
+        assert!(parse(&with_group(2)).is_err(), "only groups 0 and 1 exist");
         let mut cut = build(3.0);
         cut.pop();
         assert!(parse(&cut).is_err(), "truncated");

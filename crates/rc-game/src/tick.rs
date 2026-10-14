@@ -477,6 +477,9 @@ impl Game {
             // FUN_002285a0: the cheat entry (the last moves against the patterns; crate::cheats).
             let h = &self.hero;
             let inp = crate::cheats::MoveInput { state_ticks: h.timer, group: h.group, state: h.state, flip_sector: h.jump.kind7a0, combo: h.melee.combo, mirror: self.options.cheats.on(crate::cheats::slot::MIRROR) };
+            // Cosmetic only (Lauma's bust growth under consecutive side flips, rc_formats::moby_anim::bust_move): the
+            // tick's move code, once per flip. It reads the hero and changes nothing in the simulation.
+            rc_formats::moby_anim::bust_move(crate::cheats::classify(&inp));
             let mut active = self.options.cheats.0;
             if let Some(t) = self.hero.cheat_moves.step(self.options.cheat_entry, &inp, &self.cheat_patterns, &mut active) {
                 self.options.cheats.0 = active;

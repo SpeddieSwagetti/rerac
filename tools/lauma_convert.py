@@ -26,7 +26,7 @@ File layout (little-endian): "RCHM", u32 version (1, 2 with the rig block, 3 wit
 texture (0xff: none; a dropped material), f32 positions[3 * V], f32 normals[3 * V], f32 uvs[2 * V],
 u32 triangles[4 * T] (a, b, c, material), then per texture u32 width, u32 height, width * height * 4 bytes RGBA.
 Version 2 appends, after the textures (version 3 adds the jiggle strands after that: u32 count, then per strand u8 joint, u8 anchor,
-u16 0, f32 spring Hz, damping ratio, largest swing in degrees, f32 pivot[3], f32 tip[3]; game axes, the model's own frame): u32 joint count (111), then per vertex u8 joint[3], u8 influence count, u16
+u16 group (0 cloth and hair, 1 bust), f32 spring Hz, damping ratio, largest swing in degrees, f32 pivot[3], f32 tip[3]; game axes, the model's own frame): u32 joint count (111), then per vertex u8 joint[3], u8 influence count, u16
 weight[3] (sum 256), then f32 joint position[3] per joint (game axes, the model's own frame, before the engine's fit).
 """
 import argparse
@@ -279,7 +279,7 @@ def main():
             if rig["jiggle"]:
                 f.write(struct.pack("<I", len(rig["jiggle"])))
                 for st in rig["jiggle"]:
-                    f.write(struct.pack("<BBHfff", st["joint"], st["anchor"], 0, st["freq"], st["damp"], st["max_deg"]))
+                    f.write(struct.pack("<BBHfff", st["joint"], st["anchor"], st["group"], st["freq"], st["damp"], st["max_deg"]))
                     f.write(np.asarray(st["pivot"], dtype="<f4").tobytes() + np.asarray(st["tip"], dtype="<f4").tobytes())
     print(f"{args.rcm}: {len(pos)} vertices, {len(tris)} triangles, {len(textures)} textures "
           f"{[t.shape[1::-1] for t in textures]}, materials -> textures {mat_tex}")

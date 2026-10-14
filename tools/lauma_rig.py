@@ -385,12 +385,19 @@ CLUSTERS = [
     dict(name="train", fams=("后摆",), anchor=PELVIS, strips=[-0.22, 0.22], joints=[49, 50], freq=2.0, damp=0.5, max_deg=22, share=0.80, power=1.2),
     dict(name="hair", fams=("HairE",), anchor=HEAD, strips=[-0.07, 0.07], joints=[51, 37], freq=3.5, damp=0.35, max_deg=26, share=0.80, power=1.2),
     dict(name="pendants", fams=("Bone_PendantA", "Bone_PendantB", "Bone_PendantC"), anchor=HEAD, strips=[-0.15, 0.15], joints=[38, 39], freq=4.0, damp=0.30, max_deg=35, share=0.90, power=1.0),
+    # Bust (group 1: its own amount and speed in the engine, RC_LAUMA_BUST, apart from the cloth and hair of group 0).
+    # Her 胸上2 bones carry a smooth weight gradient already, so the strand takes `share` of it as it is (no growth along
+    # a length); the strand hangs from a pivot above and behind the bust, so a drop or a bob of the chest swings it.
+    dict(name="bust_L", fams=("胸上2.L",), anchor=5, strips=[0.0], joints=[40], freq=5.0, damp=0.30, max_deg=12, share=0.70, power=0.0, bust=True, group=1),
+    dict(name="bust_R", fams=("胸上2.R",), anchor=5, strips=[0.0], joints=[43], freq=5.0, damp=0.30, max_deg=12, share=0.70, power=0.0, bust=True, group=1),
 ]
 
 
 def bone_family(name):
     if re.match(r"^(D_|F_|S_)\d", name):
         return name[:2]
+    if name.startswith("胸上2"):
+        return name  # the bust bones, one family each (胸上2.L, 胸上2.R)
     if name.startswith("后摆"):
         return "后摆"
     if name.startswith("前裙"):
@@ -438,6 +445,13 @@ def add_jiggle(rig, pos, joints, weights, sj, sw, sc):
             for v, w in zip(sel, wk):
                 if w > 1e-4:
                     extra[v][jt] = extra[v].get(jt, 0.0) + float(w)
+            if c.get("bust"):
+                # free end: where the bone's weight is centred; pivot: above and behind it, toward the sternum
+                wts = mass[sel]
+                tip = (pos[sel] * wts[:, None]).sum(axis=0) / wts.sum()
+                pivot = np.array([tip[0] * 0.5, tip[1] + 0.08, tip[2] - 0.05])
+                strands.append(dict(joint=jt, anchor=c["anchor"], freq=c["freq"], damp=c["damp"], max_deg=c["max_deg"], pivot=pivot, tip=tip, name=c["name"], group=c.get("group", 0)))
+                continue
             # the strand's pivot and free end: the top and bottom of the strip's own vertices along its length
             mine = sel[(tents[:, k] > 0.5) & core[sel]]
             if len(mine) < 8:
@@ -447,7 +461,7 @@ def add_jiggle(rig, pos, joints, weights, sj, sw, sc):
             fm = np.clip((y_top - pos[mine, 1]) / max(y_top - y_bot, 1e-6), 0.0, 1.0)
             top = pos[mine[fm < 0.08]].mean(axis=0) if (fm < 0.08).any() else pos[mine[np.argmin(fm)]]
             bot = pos[mine[fm > 0.92]].mean(axis=0) if (fm > 0.92).any() else pos[mine[np.argmax(fm)]]
-            strands.append(dict(joint=jt, anchor=c["anchor"], freq=c["freq"], damp=c["damp"], max_deg=c["max_deg"], pivot=top, tip=bot, name=c["name"]))
+            strands.append(dict(joint=jt, anchor=c["anchor"], freq=c["freq"], damp=c["damp"], max_deg=c["max_deg"], pivot=top, tip=bot, name=c["name"], group=c.get("group", 0)))
     sj2, sw2, sc2 = sj.copy(), sw.copy(), sc.copy()
     for v in range(n):
         if not extra[v]:
