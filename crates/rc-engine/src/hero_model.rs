@@ -43,7 +43,11 @@
 //! `RC_LAUMA_BUST_STIFF=<f>` (same ranges and defaults), so either can be turned up or off alone; `RC_LAUMA_BUST_GROW=<f>`
 //! (default 0.12, 0 = off) is how much her bust grows with each consecutive side flip, up to `RC_LAUMA_BUST_GROW_MAX` (default 2) times
 //! its size, and a back flip (or any other move) resets it; `RC_LAUMA_FLOOR=0` turns the floor guard off,
-//! `RC_LAUMA_FLOOR_SNAP=<metres>` (default 0.05) is how far above the floor a hovering foot is lowered onto it, and
+//! `RC_LAUMA_FLOOR_SNAP=<metres>` (default 0.05) is how far above the floor a hovering foot is lowered onto it,
+//! `RC_LAUMA_FLOOR_LIFT=<metres>` (default 0.20) caps how far the guard lifts her out of the floor, and
+//! `RC_LAUMA_FLOOR_SCENE=<metres>` (default 0: the guard is off in cutscenes, whose floor is not the actor's origin) how far it may in a cutscene,
+//! `RC_LAUMA_FLOOR_LOW=<metres>` (default 0.40) the same while her pelvis is low (lying, kneeling, getting up; every point
+//! of her body counts then), `RC_LAUMA_FLOOR_DEBUG=1` prints the guard's workings, and
 //! `RC_LAUMA_PIN=neck|all|off` (default `neck`) is which joints may not stretch (see `rc_formats::moby_anim::FloorGuard`).
 //! With `RC_MOBY_CPU_LIGHT` the class colours are baked at load before this runs, so Ratchet stays.
 //!
@@ -92,6 +96,9 @@ struct RigData {
     joints: Vec<[f32; 3]>,
     /// Version 3: the spring strands (cape, train, hair, pendants), pivot and tip in the model's own frame.
     jiggle: Vec<JiggleStrand>,
+    /// Version 4: points of her body (joint, model-frame position) that may touch the ground; the floor guard uses them
+    /// instead of the soles of the feet.
+    contacts: Vec<(u8, [f32; 3])>,
 }
 
 struct Reader<'a> {
@@ -124,7 +131,7 @@ fn parse(data: &[u8]) -> Result<Asset> {
     let mut r = Reader { data, at: 0 };
     ensure!(r.take(4)? == b"RCHM", "not a hero model file (magic)");
     let version = r.u32()?;
-    ensure!((1..=3).contains(&version), "unsupported hero model version {version}");
+    ensure!((1..=4).contains(&version), "unsupported hero model version {version}");
     let (nv, nt, ntex) = (r.u32()? as usize, r.u32()? as usize, r.u32()? as usize);
     let mat_tex: [u8; 16] = r.take(16)?.try_into().unwrap();
     let pos = r.floats::<3>(nv)?;
@@ -171,7 +178,17 @@ fn parse(data: &[u8]) -> Result<Asset> {
                 jiggle.push(JiggleStrand { joint, anchor, freq, damp, max_deg, group: group as u8, pivot, tip });
             }
         }
-        Some(RigData { skin, joints, jiggle })
+        let mut contacts = Vec::new();
+        if version >= 4 {
+            let nc = r.u32()? as usize;
+            ensure!(nc <= 4096, "the rig has {nc} contact points");
+            for _ in 0..nc {
+                let (joint, _pad) = (r.u8()?, r.take(3)?);
+                ensure!((joint as usize) < nj, "a contact point names a joint past the rig");
+                contacts.push((joint, r.floats::<3>(1)?[0]));
+            }
+        }
+        Some(RigData { skin, joints, jiggle, contacts })
     } else {
         None
     };
@@ -206,11 +223,11 @@ const LAUMA_MAX: f32 = 2.5;
 /// Share of the pelvis's small translation motion she keeps by default (his bob of a walk or run). Motion beyond
 /// [`BOB_KNEE`] (a crouch, sitting, a landing's dip) is not softened: her legs shorten by their own ratio there and the
 /// pelvis has to follow them or her feet leave the ground.
-const LAUMA_BOB: f32 = 0.6;
+const LAUMA_BOB: f32 = 0.3;
 /// How far the pelvis may move off its rest height, in metres (his), before the bob factor stops applying.
 const BOB_KNEE: f32 = 0.04;
 /// Share of his squash and stretch she keeps by default.
-const LAUMA_SQUASH: f32 = 0.4;
+const LAUMA_SQUASH: f32 = 0.2;
 
 fn env_f32(name: &str, default: f32) -> f32 { std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default) }
 
@@ -545,6 +562,16 @@ struct GuardLimits {
     max_lift: f32,
     snap: f32,
     band: f32,
+    /// The reach of the snap while the pelvis is low, and the pelvis heights (metres) between which it fades in.
+    snap_low: f32,
+    band_low: f32,
+    /// The most the guard lifts her in a cutscene, metres (0: it does nothing there).
+    scene_lift: f32,
+    low_hi: f32,
+    low_lo: f32,
+    /// The pelvis's bind position, packed units.
+    pelvis: [f32; 3],
+    debug: bool,
     floor_on: bool,
 }
 
@@ -553,8 +580,17 @@ struct GuardLimits {
 fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, limits: GuardLimits, pins: Vec<u8>, anim: &MobyAnimClass) -> Option<FloorGuard> {
     const FEET: [u8; 8] = [94, 95, 96, 97, 100, 101, 102, 103];
     const BINS: usize = 8;
-    let mut points = Vec::new();
+    let packed = |p: [f32; 3]| {
+        let (x, y) = (p[0] * fit.cos - p[1] * fit.sin, p[0] * fit.sin + p[1] * fit.cos);
+        [x * fit.scale / unit, y * fit.scale / unit, (p[2] * fit.scale + fit.dz) / unit]
+    };
+    // A version 4 model names the points of her body that may touch the ground; older ones only have her soles.
+    let mut points: Vec<(u8, [f32; 3])> = rig.contacts.iter().filter(|c| (c.0 as usize) < anim.joint_count).map(|&(j, p)| (j, packed(p))).collect();
+    let from_contacts = !points.is_empty();
     for left in [false, true] {
+        if from_contacts {
+            break;
+        }
         let mut cand: Vec<(u8, [f32; 3])> = Vec::new();
         for (i, sk) in rig.skin.iter().enumerate() {
             let (mut best, mut best_w) = (0u8, 0u16);
@@ -586,8 +622,25 @@ fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, limits: Guard
     if anim.rest.len() < 2 {
         return None;
     }
-    let GuardLimits { floor, max_lift, snap, band, floor_on } = limits;
-    Some(FloorGuard { joint_count: anim.joint_count, rest1: anim.rest[1].map(f32::to_bits), points, floor: floor / unit, max_lift: max_lift / unit, snap: snap / unit, band: band / unit, floor_on, pins })
+    let GuardLimits { floor, max_lift, snap, band, snap_low, band_low, scene_lift, low_hi, low_lo, pelvis, debug, floor_on } = limits;
+    Some(FloorGuard {
+        joint_count: anim.joint_count,
+        rest1: anim.rest[1].map(f32::to_bits),
+        points,
+        floor: floor / unit,
+        max_lift: max_lift / unit,
+        snap: snap / unit,
+        band: band / unit,
+        pelvis,
+        low_hi: low_hi / unit,
+        low_lo: low_lo / unit,
+        snap_low: snap_low / unit,
+        band_low: band_low / unit,
+        scene_lift: scene_lift / unit,
+        debug,
+        floor_on,
+        pins,
+    })
 }
 
 /// A sequence the cutscene player streams into an actor's slot (its own frames, never part of the level's class data):
@@ -750,9 +803,9 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     // pose (RC_LAUMA_FLOOR=0 turns that off; RC_LAUMA_FLOOR_SNAP=<metres, default 0.05> is how far above the floor a
     // hovering foot is still lowered onto it). RC_LAUMA_PIN=neck|all|off (default neck) holds joints at their rest
     // translation and scale, so no key, layer or modifier of his can stretch her neck.
-    let snap_m = env_f32("RC_LAUMA_FLOOR_SNAP", 0.05);
+    let snap_m = env_f32("RC_LAUMA_FLOOR_SNAP", 0.0);
     let snap_m = (if snap_m.is_finite() { snap_m.clamp(0.0, 0.5) } else { 0.05 }) * total;
-    let pin_mode = std::env::var("RC_LAUMA_PIN").unwrap_or_default();
+    let pin_mode = std::env::var("RC_LAUMA_PIN").unwrap_or_else(|_| "all".to_string());    
     let guard = rig.and_then(|r| {
         let n = mobys.anim[ci].joint_count;
         let strand_joints: Vec<u8> = r.jiggle.iter().map(|s| s.joint).collect();
@@ -769,7 +822,33 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
             }
             _ => [7u8, 8].into_iter().filter(|&j| (j as usize) < n).collect(),
         };
-        let limits = GuardLimits { floor: zmin, max_lift: 0.20 * total, snap: snap_m, band: 3.0 * snap_m, floor_on: env_f32("RC_LAUMA_FLOOR", 1.0) > 0.5 };
+        // The pelvis's standing height (packed units, then metres): the low-pose snap fades in below 60% of it and is full
+        // below 35% (lying, kneeling, getting up); RC_LAUMA_FLOOR_LOW=<metres, default 0.40> is how far above the floor
+        // her body may hover then and still be lowered onto it (0 turns that off).
+        let pelvis = plan.as_ref().map_or([0.0; 3], |p| p.rest[1]);
+        let stand = pelvis[2] * unit;
+        // In a cutscene the floor is the scene's, not the actor's origin plane (the crash on Novalis puts his feet 15 cm
+        // under it): the guard does nothing there unless RC_LAUMA_FLOOR_SCENE=<metres> allows it a small lift.
+        let scene_m = env_f32("RC_LAUMA_FLOOR_SCENE", 0.05);
+        let scene_m = (if scene_m.is_finite() { scene_m.clamp(0.0, 0.5) } else { 0.0 }) * total;
+        let lift_m = env_f32("RC_LAUMA_FLOOR_LIFT", 0.0);
+        let lift_m = if lift_m.is_finite() { lift_m.clamp(0.0, 0.5) } else { 0.20 };
+        let low_m = env_f32("RC_LAUMA_FLOOR_LOW", 0.0);
+        let low_m = (if low_m.is_finite() { low_m.clamp(0.0, 1.0) } else { 0.40 }) * total;
+        let limits = GuardLimits {
+            floor: zmin,
+            max_lift: lift_m * total,
+            snap: snap_m,
+            band: 3.0 * snap_m,
+            snap_low: low_m.max(snap_m),
+            band_low: (1.5 * low_m).max(3.0 * snap_m),
+            scene_lift: scene_m,
+            low_hi: 0.60 * stand,
+            low_lo: 0.35 * stand,
+            pelvis,
+            debug: env_f32("RC_LAUMA_FLOOR_DEBUG", 0.0) > 0.5,
+            floor_on: env_f32("RC_LAUMA_FLOOR", 1.0) > 0.5,
+        };
         floor_guard(asset, r, &fit, unit, limits, pins, &mobys.anim[ci])
     });
     let guarded = guard.as_ref().map_or((0, 0), |g| (if g.floor_on { g.points.len() } else { 0 }, g.pins.len()));
@@ -780,7 +859,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
         Some(r) if !r.jiggle.is_empty() && mobys.anim[ci].rest.len() > 1 => {
             // group 0: cloth and hair; group 1: bust
             let amount = [env_f32("RC_LAUMA_JIGGLE", 1.0), env_f32("RC_LAUMA_BUST", 1.0)];
-            let stiffness = [env_f32("RC_LAUMA_JIGGLE_STIFF", 1.0), env_f32("RC_LAUMA_BUST_STIFF", 1.0)];
+            let stiffness = [env_f32("RC_LAUMA_JIGGLE_STIFF", 0.1), env_f32("RC_LAUMA_BUST_STIFF", 0.1)];
             let n = mobys.anim[ci].joint_count;
             let packed = |p: [f32; 3]| {
                 let (x, y) = (p[0] * fit.cos - p[1] * fit.sin, p[0] * fit.sin + p[1] * fit.cos);

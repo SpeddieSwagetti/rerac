@@ -1083,10 +1083,35 @@ pub struct FloorGuard {
     pub snap: f32,
     /// Height above the floor at which the lowering has faded out, packed units (> `snap`).
     pub band: f32,
+    /// The pelvis's bind position (packed units): its posed height says whether the pose is low.
+    pub pelvis: [f32; 3],
+    /// Posed pelvis heights at which the low-pose snap is off (`low_hi`, at and above) and fully on (`low_lo`, at and below).
+    pub low_hi: f32,
+    pub low_lo: f32,
+    /// The snap and the band of a low pose (a body lying or kneeling touches the floor with more than its feet).
+    pub snap_low: f32,
+    pub band_low: f32,
+    /// Largest lift in a cutscene, packed units (0: the guard does nothing there).
+    pub scene_lift: f32,
+    /// Print the guard's workings now and then (`RC_LAUMA_FLOOR_DEBUG=1`).
+    pub debug: bool,
     /// False: no floor handling (pins still apply).
     pub floor_on: bool,
     /// Joints held at their rest translation and scale.
     pub pins: Vec<u8>,
+}
+
+thread_local! {
+    /// Set by a cutscene around the evaluation of an actor's pose (see [`set_scene_pose`]).
+    static SCENE_POSE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Marks the pose evaluations that follow on this thread as a cutscene actor's, until called again with `false`. A scene
+/// places its actors on its own floor (Ratchet's feet in the crash on Novalis sit about 15 cm under the actor's origin),
+/// so the floor guard's assumption that the floor is the origin plane does not hold there: it only lifts, by at most
+/// [`FloorGuard::scene_lift`] (0: not at all) and never lowers.
+pub fn set_scene_pose(on: bool) {
+    SCENE_POSE.with(|c| c.set(on));
 }
 
 static FLOOR_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1122,19 +1147,42 @@ fn apply_floor_guard(class: &MobyAnimClass, out: &mut [Rows]) {
     if !g.floor_on || g.points.is_empty() || class.joint_count != g.joint_count || class.rest.get(1).map(|r| r.map(f32::to_bits)) != Some(g.rest1) {
         return;
     }
+    let in_scene = SCENE_POSE.with(|c| c.get());
+    if in_scene && g.scene_lift <= 0.0 {
+        return;
+    }
     let mut low = f32::MAX;
+    let mut low_joint = 0u8;
     for &(j, p) in &g.points {
         let Some(f) = out.get(j as usize) else { continue };
-        low = low.min(p[0] * f[0][2] + p[1] * f[1][2] + p[2] * f[2][2] + f[3][2]);
+        let z = p[0] * f[0][2] + p[1] * f[1][2] + p[2] * f[2][2] + f[3][2];
+        if z < low {
+            (low, low_joint) = (z, j);
+        }
     }
-    let shift = if low < g.floor {
+    // While the pelvis is low (lying, kneeling, getting up) the snap and its fade reach farther: from `low_hi` (none of
+    // it) to `low_lo` (all of it) the pelvis's height blends the standing snap / band into the low-pose ones.
+    let pelvis = out.get(1).map_or(f32::MAX, |f| point_through(f, g.pelvis)[2]);
+    let w = if g.low_hi > g.low_lo { ((g.low_hi - pelvis) / (g.low_hi - g.low_lo)).clamp(0.0, 1.0) } else { 0.0 };
+    let w = w * w * (3.0 - 2.0 * w);
+    let snap = g.snap + w * (g.snap_low - g.snap);
+    let band = g.band + w * (g.band_low - g.band);
+    let shift = if in_scene {
+        if low < g.floor { (g.floor - low).min(g.scene_lift) } else { 0.0 }
+    } else if low < g.floor {
         (g.floor - low).min(g.max_lift)
-    } else if low < g.floor + g.band {
+    } else if low < g.floor + band {
         let d = low - g.floor;
-        if d <= g.snap { -d } else { -d * (1.0 - (d - g.snap) / (g.band - g.snap).max(1e-6)) }
+        if d <= snap { -d } else { -d * (1.0 - (d - snap) / (band - snap).max(1e-6)) }
     } else {
         0.0
     };
+    if g.debug {
+        static N: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if N.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % 45 == 0 {
+            eprintln!("floor guard: lowest {low:.0} (joint {low_joint}) floor {:.0} pelvis {pelvis:.0} low-pose {w:.2} snap {snap:.0} -> shift {shift:.0} (packed units)", g.floor);
+        }
+    }
     if shift != 0.0 {
         for f in out.iter_mut() {
             f[3][2] += shift;
@@ -1430,14 +1478,18 @@ mod tests {
 
     fn q66_f1() -> [i16; 4] { bytemuck::pod_read_unaligned(&Q66_F1) }
 
+    /// The floor guard is global, so the tests that set it run one at a time.
+    static GUARD_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// A pose with the foot point under the floor is lifted (by at most `max_lift`), one above it is not, another class is
     /// not, and with the guard removed nothing changes. The class has a rest translation no other test uses, so tests
     /// running in parallel are not touched by the guard.
     #[test]
     fn floor_guard_lifts_only_below_the_floor() {
+        let _serial = GUARD_TESTS.lock().unwrap_or_else(|e| e.into_inner());
         let class = |r1: [f32; 3]| MobyAnimClass { joint_count: 2, skeleton: vec![IDENTITY; 2], rest: vec![[0.0; 3], r1], parent_word: vec![0, 0x7000_0000], sequences: Vec::new() };
         let mine = class([1.5, 2.5, 3.5]);
-        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [1.5f32, 2.5, 3.5].map(f32::to_bits), points: vec![(1, [0.0, 0.0, 0.0])], floor: 10.0, max_lift: 25.0, snap: 4.0, band: 12.0, floor_on: true, pins: Vec::new() }));
+        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [1.5f32, 2.5, 3.5].map(f32::to_bits), points: vec![(1, [0.0, 0.0, 0.0])], floor: 10.0, max_lift: 25.0, snap: 4.0, band: 12.0, pelvis: [0.0; 3], low_hi: 0.0, low_lo: 0.0, snap_low: 0.0, band_low: 0.0, scene_lift: 0.0, debug: false, floor_on: true, pins: Vec::new() }));
         let pose = |z: f32| { let mut v = vec![IDENTITY; 2]; v[1][3][2] = z; v };
         let mut low = pose(4.0);
         apply_floor_guard(&mine, &mut low);
@@ -1466,6 +1518,53 @@ mod tests {
 
     /// The palette of a jiggle strand turns about its pivot: a quarter turn about z takes the x row to y and the y row to
     /// -x, leaves the pivot where it is, and no change of direction leaves the palette alone.
+    /// With the pelvis low the snap reaches much farther: a point 30 above the floor is lowered onto it when the pelvis is
+    /// at or under `low_lo`, left alone when the pelvis is at or over `low_hi`.
+    #[test]
+    fn floor_guard_snaps_farther_when_the_pelvis_is_low() {
+        let _serial = GUARD_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mine = MobyAnimClass { joint_count: 2, skeleton: vec![IDENTITY; 2], rest: vec![[0.0; 3], [2.5, 3.5, 4.5]], parent_word: vec![0, 0x7000_0000], sequences: Vec::new() };
+        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [2.5f32, 3.5, 4.5].map(f32::to_bits), points: vec![(0, [0.0; 3])], floor: 10.0, max_lift: 25.0, snap: 4.0, band: 12.0, pelvis: [0.0; 3], low_hi: 20.0, low_lo: 10.0, snap_low: 30.0, band_low: 60.0, scene_lift: 0.0, debug: false, floor_on: true, pins: Vec::new() }));
+        let pose = |foot: f32, pelvis: f32| { let mut v = vec![IDENTITY; 2]; v[0][3][2] = foot; v[1][3][2] = pelvis; v };
+        let mut low = pose(40.0, 5.0);
+        apply_floor_guard(&mine, &mut low);
+        assert_eq!(low[0][3][2], 10.0, "pelvis low: 30 above the floor is lowered onto it");
+        let mut standing = pose(40.0, 30.0);
+        apply_floor_guard(&mine, &mut standing);
+        assert_eq!(standing[0][3][2], 40.0, "pelvis high: 30 above the floor is left alone");
+        let mut between = pose(40.0, 15.0);
+        apply_floor_guard(&mine, &mut between);
+        assert!(between[0][3][2] < 40.0 && between[0][3][2] > 10.0, "halfway: partly lowered, {}", between[0][3][2]);
+        set_floor_guard(None);
+    }
+
+    /// In a cutscene the guard never lowers and lifts at most `scene_lift` (nothing when that is 0): the scene's floor is
+    /// not the actor's origin plane.
+    #[test]
+    fn floor_guard_in_a_scene_only_lifts_a_little_or_not_at_all() {
+        let _serial = GUARD_TESTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mine = MobyAnimClass { joint_count: 2, skeleton: vec![IDENTITY; 2], rest: vec![[0.0; 3], [3.5, 4.5, 5.5]], parent_word: vec![0, 0x7000_0000], sequences: Vec::new() };
+        let guard = |scene_lift: f32| FloorGuard { joint_count: 2, rest1: [3.5f32, 4.5, 5.5].map(f32::to_bits), points: vec![(0, [0.0; 3])], floor: 10.0, max_lift: 25.0, snap: 4.0, band: 12.0, pelvis: [0.0; 3], low_hi: 0.0, low_lo: 0.0, snap_low: 0.0, band_low: 0.0, scene_lift, debug: false, floor_on: true, pins: Vec::new() };
+        let pose = |z: f32| { let mut v = vec![IDENTITY; 2]; v[0][3][2] = z; v };
+        set_floor_guard(Some(guard(0.0)));
+        set_scene_pose(true);
+        let mut sunk = pose(-100.0);
+        apply_floor_guard(&mine, &mut sunk);
+        assert_eq!(sunk[0][3][2], -100.0, "scene, no scene lift: untouched even far under the origin plane");
+        set_floor_guard(Some(guard(5.0)));
+        let mut sunk = pose(4.0);
+        apply_floor_guard(&mine, &mut sunk);
+        assert_eq!(sunk[0][3][2], 9.0, "scene lift 5 of the 6 needed");
+        let mut hover = pose(12.0);
+        apply_floor_guard(&mine, &mut hover);
+        assert_eq!(hover[0][3][2], 12.0, "a scene never lowers");
+        set_scene_pose(false);
+        let mut game = pose(12.0);
+        apply_floor_guard(&mine, &mut game);
+        assert_eq!(game[0][3][2], 10.0, "outside a scene the guard works as before");
+        set_floor_guard(None);
+    }
+
     #[test]
     fn jiggle_rotation_turns_the_palette_about_the_pivot() {
         let mut base = IDENTITY;

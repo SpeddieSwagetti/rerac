@@ -831,7 +831,11 @@ fn pose_actors(rt: &mut SceneRuntime, player: &ScenePlayer, out: &SceneTick, lev
         let s = AnimState { seq_a: a.slot, frame_a: pose.frame_a, seq_b: a.slot, frame_b: pose.frame_b, t: pose.t, speed: 1.0, rate: 1.0, flags: 0, trigger_count: 0, skip_advance: true };
         a.pose = Some((s, pose.position));
         let mods = a.moby.and_then(|id| table.and_then(|t| t.mobys.get(id))).map(|m| m.joint_mods.as_slice()).unwrap_or(&[]);
+        // The scene's floor is not the actor's origin plane: the replacement hero's floor guard stands down (and only lifts
+        // a little if RC_LAUMA_FLOOR_SCENE says so) for the pose evaluated here.
+        rc_formats::moby_anim::set_scene_pose(true);
         let f = moby_anim::evaluate_posed(&a.anim, &s, None, &[], mods);
+        rc_formats::moby_anim::set_scene_pose(false);
         let at = a.base as usize * 64;
         for (k, b) in f.iter().take(a.slots as usize).flat_map(|r| r.iter().flatten().flat_map(|v| v.to_le_bytes())).enumerate() { palette[at + k] = b; }
         let lights = lighting.map(|l| light::moby_lights(&rows, &l.bank, rt.light_word, rt.ambient, 0x80));

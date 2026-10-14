@@ -485,6 +485,40 @@ def add_jiggle(rig, pos, joints, weights, sj, sw, sc):
     return sj2, sw2, sc2, strands
 
 
+CLOTH_FAMILIES = ("F_", "F", "后摆", "前裙", "S_", "D_", "HairE")
+
+
+def body_contacts(rig, pos, joints, weights, sj, sw, sc, strands):
+    """Points that touch the ground when she lies, kneels or stands: for every joint her body (not her cloth or hair) is
+    skinned to, the vertices farthest along each of the six axes, in her T pose (game axes).  Returns [(joint, x, y, z)].
+    The engine's floor guard (rc-formats FloorGuard) keeps the lowest of them on the floor."""
+    fam = [bone_family(n) for n in rig.names]
+    cloth_bones = [i for i, f in enumerate(fam) if f in CLOTH_FAMILIES or (f and f.startswith("Bone_"))]
+    cloth = (np.isin(joints, cloth_bones) * weights).sum(axis=1)
+    strand_joints = {s["joint"] for s in strands}
+    gp = to_game(pos)
+    dom = np.array([sj[v, int(np.argmax(sw[v, : max(int(sc[v]), 1)]))] for v in range(len(pos))])
+    # The head: the skull only. Her headdress and antlers stand up and out from it, and a body lying on its back would
+    # otherwise be lifted off the floor to keep their tips above it.
+    head_ok = (pos[:, 1] < rig.p("頭")[1] + 0.16) & (np.abs(pos[:, 0]) < 0.11)
+    out, seen = [], set()
+    for j in sorted(set(dom.tolist())):
+        if j in strand_joints:
+            continue
+        ok = (dom == j) & (cloth < 0.25)
+        if j == HEAD:
+            ok &= head_ok
+        idx = np.where(ok)[0]
+        if len(idx) == 0:
+            continue
+        for axis in range(3):
+            for pick in (idx[np.argmin(gp[idx, axis])], idx[np.argmax(gp[idx, axis])]):
+                if int(pick) not in seen:
+                    seen.add(int(pick))
+                    out.append((int(j), *map(float, gp[pick])))
+    return out
+
+
 RATCHET_BOTTOM, RATCHET_TOP = 0.002, 1.416  # his bind-pose box in z (lauma_dump.txt); the engine fits her to exactly his box
 
 
@@ -531,7 +565,9 @@ def retarget(names, parent, bone_pos, pos, nrm, joints, weights, dump_path):
         "rig: leg length (hip to floor) hers {:.3f} m vs his {:.3f} m; shoulder height hers {:.3f} m vs his {:.3f} m".format(
             (tg[92][1] - ymin) * scale, r_rest[92][2], (tg[53][1] - ymin) * scale, r_rest[53][2]),
     ]
+    contacts = body_contacts(rig, pos_t, joints, weights, sj, sw, sc, strands)
+    lines.append(f"rig: {len(contacts)} body contact points for the floor guard")
     for st in strands:
         st["pivot"], st["tip"] = to_game(np.asarray(st["pivot"])), to_game(np.asarray(st["tip"]))
     lines.append("rig: jiggle strands: " + ", ".join(f"{st['name']}->{st['joint']}(len {np.linalg.norm(st['tip'] - st['pivot']) * scale:.2f} m)" for st in strands))
-    return dict(pos=pos_t, nrm=nrm_t, skin=(sj, sw, sc), joints_game=jg, jiggle=strands, report="\n".join(lines))
+    return dict(pos=pos_t, nrm=nrm_t, skin=(sj, sw, sc), joints_game=jg, jiggle=strands, contacts=contacts, report="\n".join(lines))

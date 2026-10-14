@@ -22,11 +22,12 @@ Needs numpy and Pillow. What it does (everything the Rust side would otherwise n
   the same vertices and UVs as material 13 with a mostly transparent texture) is composited into material 13's
   texture and its duplicate mesh dropped, so no coplanar layers fight for depth.
 
-File layout (little-endian): "RCHM", u32 version (1, 2 with the rig block, 3 with the jiggle strands), u32 vertices, u32 triangles, u32 textures, u8[16] material ->
+File layout (little-endian): "RCHM", u32 version (1, 2 with the rig block, 3 with the jiggle strands, 4 with the body contact points), u32 vertices, u32 triangles, u32 textures, u8[16] material ->
 texture (0xff: none; a dropped material), f32 positions[3 * V], f32 normals[3 * V], f32 uvs[2 * V],
 u32 triangles[4 * T] (a, b, c, material), then per texture u32 width, u32 height, width * height * 4 bytes RGBA.
 Version 2 appends, after the textures (version 3 adds the jiggle strands after that: u32 count, then per strand u8 joint, u8 anchor,
-u16 group (0 cloth and hair, 1 bust), f32 spring Hz, damping ratio, largest swing in degrees, f32 pivot[3], f32 tip[3]; game axes, the model's own frame): u32 joint count (111), then per vertex u8 joint[3], u8 influence count, u16
+u16 group (0 cloth and hair, 1 bust), f32 spring Hz, damping ratio, largest swing in degrees, f32 pivot[3], f32 tip[3]; game axes, the model's own frame;
+version 4 adds the body contact points after that: u32 count, then per point u8 joint, 3 pad bytes, f32 position[3]): u32 joint count (111), then per vertex u8 joint[3], u8 influence count, u16
 weight[3] (sum 256), then f32 joint position[3] per joint (game axes, the model's own frame, before the engine's fit).
 """
 import argparse
@@ -260,7 +261,7 @@ def main():
 
     with open(args.rcm, "wb") as f:
         f.write(b"RCHM")
-        f.write(struct.pack("<IIII", (3 if rig["jiggle"] else 2) if rig else 1, len(pos), len(tris), len(textures)))
+        f.write(struct.pack("<IIII", (4 if rig["contacts"] else 3 if rig["jiggle"] else 2) if rig else 1, len(pos), len(tris), len(textures)))
         f.write(bytes(mat_tex))
         for a in (pos, nrm, uv):
             f.write(np.ascontiguousarray(a, dtype="<f4").tobytes())
@@ -276,11 +277,15 @@ def main():
             assert rec.itemsize == 10 and (rec["w"].sum(axis=1) == 256).all()
             f.write(rec.tobytes())
             f.write(np.ascontiguousarray(rig["joints_game"], dtype="<f4").tobytes())
-            if rig["jiggle"]:
+            if rig["jiggle"] or rig["contacts"]:
                 f.write(struct.pack("<I", len(rig["jiggle"])))
                 for st in rig["jiggle"]:
                     f.write(struct.pack("<BBHfff", st["joint"], st["anchor"], st["group"], st["freq"], st["damp"], st["max_deg"]))
                     f.write(np.asarray(st["pivot"], dtype="<f4").tobytes() + np.asarray(st["tip"], dtype="<f4").tobytes())
+            if rig["contacts"]:
+                f.write(struct.pack("<I", len(rig["contacts"])))
+                for j, x, y, z in rig["contacts"]:
+                    f.write(struct.pack("<BBBBfff", j, 0, 0, 0, x, y, z))
     print(f"{args.rcm}: {len(pos)} vertices, {len(tris)} triangles, {len(textures)} textures "
           f"{[t.shape[1::-1] for t in textures]}, materials -> textures {mat_tex}")
 
