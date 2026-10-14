@@ -38,6 +38,10 @@
 //! `rig` for a version 2 model, `back` for version 1). `RC_LAUMA_BOB=<f>` (default [`LAUMA_BOB`]) scales the pelvis's small
 //! translation motion (the bob of a walk or run; big moves keep their size, scaled to her legs) and `RC_LAUMA_SQUASH=<f>` (default
 //! [`LAUMA_SQUASH`]) how much of his squash and stretch scale keys she takes: 1 is his full motion, 0 none.
+//! `RC_LAUMA_JIGGLE=<f>` (default 1, 0 to 2) is how much her cape, back train, hair and pendants swing on their spring strands
+//! (0: rigid), `RC_LAUMA_JIGGLE_STIFF=<f>` (default 1) speeds the springs; `RC_LAUMA_FLOOR=0` turns the floor guard off,
+//! `RC_LAUMA_FLOOR_SNAP=<metres>` (default 0.05) is how far above the floor a hovering foot is lowered onto it, and
+//! `RC_LAUMA_PIN=neck|all|off` (default `neck`) is which joints may not stretch (see `rc_formats::moby_anim::FloorGuard`).
 //! With `RC_MOBY_CPU_LIGHT` the class colours are baked at load before this runs, so Ratchet stays.
 //!
 //! `RC_LAUMA_DUMP=1` (with or without `RC_LAUMA`) writes `lauma_dump.txt` into the working directory once per
@@ -50,7 +54,7 @@ use anyhow::{ensure, Context, Result};
 use rc_formats::gadget::{self, RATCHET_O_CLASS};
 use rc_formats::level::{LevelCore, TextureEntry};
 use rc_formats::moby::{MobySkin, MobySubmesh, MobyTriangle, MobyVertex, MobyVertexKind};
-use rc_formats::moby_anim::{FloorGuard, MobyAnimClass, MobySequence};
+use rc_formats::moby_anim::{FloorGuard, JiggleSetup, JiggleStrand, MobyAnimClass, MobySequence};
 use rc_formats::texture::{LevelTexture, Texture, TextureSource, TextureTable};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -83,6 +87,8 @@ struct RigData {
     skin: Vec<MobySkin>,
     /// Where each of Ratchet's joints sits in her T pose: game axes, the model's own frame (before the fit).
     joints: Vec<[f32; 3]>,
+    /// Version 3: the spring strands (cape, train, hair, pendants), pivot and tip in the model's own frame.
+    jiggle: Vec<JiggleStrand>,
 }
 
 struct Reader<'a> {
@@ -115,7 +121,7 @@ fn parse(data: &[u8]) -> Result<Asset> {
     let mut r = Reader { data, at: 0 };
     ensure!(r.take(4)? == b"RCHM", "not a hero model file (magic)");
     let version = r.u32()?;
-    ensure!(version == 1 || version == 2, "unsupported hero model version {version}");
+    ensure!((1..=3).contains(&version), "unsupported hero model version {version}");
     let (nv, nt, ntex) = (r.u32()? as usize, r.u32()? as usize, r.u32()? as usize);
     let mat_tex: [u8; 16] = r.take(16)?.try_into().unwrap();
     let pos = r.floats::<3>(nv)?;
@@ -133,7 +139,7 @@ fn parse(data: &[u8]) -> Result<Asset> {
     }
     ensure!(tris.iter().all(|t| t[..3].iter().all(|&i| (i as usize) < nv) && t[3] < 16), "a triangle is out of range");
     ensure!(mat_tex.iter().all(|&t| t == 0xff || (t as usize) < ntex), "a material names a missing texture");
-    let rig = if version == 2 {
+    let rig = if version >= 2 {
         let nj = r.u32()? as usize;
         ensure!((1..=0x70).contains(&nj), "the rig has {nj} joints");
         let mut skin = Vec::with_capacity(nv);
@@ -147,7 +153,21 @@ fn parse(data: &[u8]) -> Result<Asset> {
             ensure!(joints[..used].iter().all(|&j| (j as usize) < nj), "a vertex skins to a joint past the rig");
             skin.push(MobySkin { count, joints, weights });
         }
-        Some(RigData { skin, joints: r.floats::<3>(nj)? })
+        let joints = r.floats::<3>(nj)?;
+        let mut jiggle = Vec::new();
+        if version >= 3 {
+            let ns = r.u32()? as usize;
+            ensure!(ns <= 32, "the rig has {ns} jiggle strands");
+            for _ in 0..ns {
+                let (joint, anchor, _pad) = (r.u8()?, r.u8()?, r.u16()?);
+                ensure!((joint as usize) < nj && (anchor as usize) < nj, "a jiggle strand names a joint past the rig");
+                let [freq, damp, max_deg] = r.floats::<3>(1)?[0];
+                ensure!(freq > 0.0 && freq < 60.0 && (0.0..=2.0).contains(&damp) && max_deg > 0.0 && max_deg <= 90.0, "a jiggle strand's spring is out of range");
+                let (pivot, tip) = (r.floats::<3>(1)?[0], r.floats::<3>(1)?[0]);
+                jiggle.push(JiggleStrand { joint, anchor, freq, damp, max_deg, pivot, tip });
+            }
+        }
+        Some(RigData { skin, joints, jiggle })
     } else {
         None
     };
@@ -515,9 +535,18 @@ fn rescale_translation_keys(seqs: &mut [Option<MobySequence>], plan: &SkeletonPl
     changed
 }
 
+/// What the floor guard may do, in metres (the floor is the height of his soles; see [`FloorGuard`]).
+struct GuardLimits {
+    floor: f32,
+    max_lift: f32,
+    snap: f32,
+    band: f32,
+    floor_on: bool,
+}
+
 /// The floor guard ([`FloorGuard`]): up to eight points per foot, the lowest vertex of each slice of the foot along its
 /// length, among the vertices whose strongest joint is one of the ankle, foot, ball or toe joints.
-fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, floor: f32, max_lift: f32, pull_band: f32, anim: &MobyAnimClass) -> Option<FloorGuard> {
+fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, limits: GuardLimits, pins: Vec<u8>, anim: &MobyAnimClass) -> Option<FloorGuard> {
     const FEET: [u8; 8] = [94, 95, 96, 97, 100, 101, 102, 103];
     const BINS: usize = 8;
     let mut points = Vec::new();
@@ -550,10 +579,11 @@ fn floor_guard(asset: &Asset, rig: &RigData, fit: &Fit, unit: f32, floor: f32, m
         }
         points.extend(bins.into_iter().flatten());
     }
-    if points.is_empty() || anim.rest.len() < 2 {
+    if anim.rest.len() < 2 {
         return None;
     }
-    Some(FloorGuard { joint_count: anim.joint_count, rest1: anim.rest[1].map(f32::to_bits), points, floor: floor / unit, max_lift: max_lift / unit, pull_band: pull_band / unit })
+    let GuardLimits { floor, max_lift, snap, band, floor_on } = limits;
+    Some(FloorGuard { joint_count: anim.joint_count, rest1: anim.rest[1].map(f32::to_bits), points, floor: floor / unit, max_lift: max_lift / unit, snap: snap / unit, band: band / unit, floor_on, pins })
 }
 
 /// A sequence the cutscene player streams into an actor's slot (its own frames, never part of the level's class data):
@@ -713,13 +743,57 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     let reshaped = plan.as_ref().map(|p| apply_skeleton(mobys, ci, p));
     *PLAN.lock().unwrap_or_else(|e| e.into_inner()) = plan.clone();
     // Her legs are longer than his and his foot angles were made for his feet: keep her soles on the ground in every
-    // pose (RC_LAUMA_FLOOR=0 turns it off).
-    let guard = match (rig, env_f32("RC_LAUMA_FLOOR", 1.0) > 0.5) {
-        (Some(r), true) => floor_guard(asset, r, &fit, unit, zmin, 0.20 * total, 0.10 * total, &mobys.anim[ci]),
+    // pose (RC_LAUMA_FLOOR=0 turns that off; RC_LAUMA_FLOOR_SNAP=<metres, default 0.05> is how far above the floor a
+    // hovering foot is still lowered onto it). RC_LAUMA_PIN=neck|all|off (default neck) holds joints at their rest
+    // translation and scale, so no key, layer or modifier of his can stretch her neck.
+    let snap_m = env_f32("RC_LAUMA_FLOOR_SNAP", 0.05);
+    let snap_m = (if snap_m.is_finite() { snap_m.clamp(0.0, 0.5) } else { 0.05 }) * total;
+    let pin_mode = std::env::var("RC_LAUMA_PIN").unwrap_or_default();
+    let guard = rig.and_then(|r| {
+        let n = mobys.anim[ci].joint_count;
+        let strand_joints: Vec<u8> = r.jiggle.iter().map(|s| s.joint).collect();
+        let pins: Vec<u8> = match pin_mode.trim() {
+            "off" => Vec::new(),
+            "all" => {
+                let mut used = [false; 256];
+                for sk in &r.skin {
+                    for k in 0..sk.count as usize {
+                        used[sk.joints[k] as usize] = true;
+                    }
+                }
+                (2..n.min(256)).filter(|&j| used[j] && !strand_joints.contains(&(j as u8))).map(|j| j as u8).collect()
+            }
+            _ => [7u8, 8].into_iter().filter(|&j| (j as usize) < n).collect(),
+        };
+        let limits = GuardLimits { floor: zmin, max_lift: 0.20 * total, snap: snap_m, band: 3.0 * snap_m, floor_on: env_f32("RC_LAUMA_FLOOR", 1.0) > 0.5 };
+        floor_guard(asset, r, &fit, unit, limits, pins, &mobys.anim[ci])
+    });
+    let guarded = guard.as_ref().map_or((0, 0), |g| (if g.floor_on { g.points.len() } else { 0 }, g.pins.len()));
+    rc_formats::moby_anim::set_floor_guard(guard);
+    // Jiggle: the cape, back train, hair and pendants swing on spring strands (RC_LAUMA_JIGGLE=<0..2, default 1>, 0
+    // holds them rigid; RC_LAUMA_JIGGLE_STIFF=<0.25..4, default 1> speeds the springs up).
+    let jiggle = match rig {
+        Some(r) if !r.jiggle.is_empty() && mobys.anim[ci].rest.len() > 1 => {
+            let amount = env_f32("RC_LAUMA_JIGGLE", 1.0);
+            let stiffness = env_f32("RC_LAUMA_JIGGLE_STIFF", 1.0);
+            let n = mobys.anim[ci].joint_count;
+            let packed = |p: [f32; 3]| {
+                let (x, y) = (p[0] * fit.cos - p[1] * fit.sin, p[0] * fit.sin + p[1] * fit.cos);
+                [x * fit.scale / unit, y * fit.scale / unit, (p[2] * fit.scale + fit.dz) / unit]
+            };
+            Some(JiggleSetup {
+                joint_count: n,
+                rest1: mobys.anim[ci].rest[1].map(f32::to_bits),
+                strands: r.jiggle.iter().filter(|s| (s.joint as usize) < n && (s.anchor as usize) < n).map(|s| JiggleStrand { pivot: packed(s.pivot), tip: packed(s.tip), ..*s }).collect(),
+                amount: if amount.is_finite() { amount.clamp(0.0, 2.0) } else { 1.0 },
+                stiffness: if stiffness.is_finite() { stiffness.clamp(0.25, 4.0) } else { 1.0 },
+            })
+        }
         _ => None,
     };
-    let guarded = guard.as_ref().map_or(0, |g| g.points.len());
-    rc_formats::moby_anim::set_floor_guard(guard);
+    let strands = jiggle.as_ref().map_or(0, |j| j.strands.len());
+    let jiggle_amount = jiggle.as_ref().map_or(0.0, |j| j.amount);
+    rc_formats::moby_anim::set_jiggle(jiggle);
 
     println!(
         "hero model: Lauma replaces class {RATCHET_O_CLASS}: {} vertices, {} triangles, {} textures (moby table {first}..{}); Ratchet is {:.2} tall at scale {:.4}, \
@@ -731,7 +805,7 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
         zmax - zmin,
         unit * 1024.0,
         if clamped > 0 { format!("; {clamped} vertices clamped to the packed range (try RC_LAUMA_SCALE below 1)") } else { String::new() },
-        reshaped.map_or(String::new(), |(keys, layers)| format!("; his skeleton reshaped to her proportions ({keys} translation keys rescaled, {layers} layer classes); floor guard on {guarded} foot points")),
+        reshaped.map_or(String::new(), |(keys, layers)| format!("; his skeleton reshaped to her proportions ({keys} translation keys rescaled, {layers} layer classes); floor guard on {} foot points, {} pinned joints; {strands} jiggle strands at {jiggle_amount}", guarded.0, guarded.1)),
     );
     Ok(())
 }
@@ -826,6 +900,40 @@ mod tests {
         let mut truncated = rig([256, 0], 1, 1);
         truncated.pop();
         assert!(parse(&truncated).is_err(), "truncated");
+    }
+
+    /// A version 3 file adds the jiggle strands; a spring out of range is refused.
+    #[test]
+    fn parse_reads_jiggle_strands() {
+        let build = |freq: f32| {
+            let mut f = tiny_model();
+            f[4..8].copy_from_slice(&3u32.to_le_bytes());
+            f.extend_from_slice(&2u32.to_le_bytes());
+            for _ in 0..3u8 {
+                f.extend_from_slice(&[1, 0, 0, 1]);
+                for w in [256u16, 0, 0] {
+                    f.extend_from_slice(&w.to_le_bytes());
+                }
+            }
+            for _ in 0..2 {
+                for c in [0.0f32; 3] {
+                    f.extend_from_slice(&c.to_le_bytes());
+                }
+            }
+            f.extend_from_slice(&1u32.to_le_bytes()); // one strand: joint 1, anchor 0
+            f.extend_from_slice(&[1, 0, 0, 0]);
+            for c in [freq, 0.4, 30.0, 0.0, 1.0, 0.0, 0.0, 0.0, -1.0] {
+                f.extend_from_slice(&c.to_le_bytes());
+            }
+            f
+        };
+        let a = parse(&build(3.0)).unwrap();
+        let st = a.rig.as_ref().unwrap().jiggle[0];
+        assert_eq!((st.joint, st.anchor, st.freq, st.max_deg, st.pivot, st.tip), (1, 0, 3.0, 30.0, [0.0, 1.0, 0.0], [0.0, 0.0, -1.0]));
+        assert!(parse(&build(0.0)).is_err(), "a zero frequency is refused");
+        let mut cut = build(3.0);
+        cut.pop();
+        assert!(parse(&cut).is_err(), "truncated");
     }
 
     /// Three joints in a chain, moved to a model twice as tall: the rest translations are the differences of the new

@@ -371,6 +371,106 @@ def skeleton_positions(tg, parent, ratchet_rest, scale, height_shift):
 
 # ----------------------------------------------------------------------------------------------------------------------
 
+# ----------------------------------------------------------------------------------------------------------------------
+# Jiggle strands.  Ratchet has no joints for a cape, hair or pendants, but he has spare ones nothing is skinned to (his
+# tail and face joints).  Each strand below borrows one: the vertices of a cluster of her cloth / hair bones are partly
+# skinned to it, more toward the free end, and the engine (`rc-formats` `apply_jiggle`) replaces that joint's palette
+# with its anchor joint's, swung by a spring about the strand's pivot.  A strand's joint is not driven by his
+# animations at all, so the joint numbers only have to be unused ones that no item attaches to.
+
+CLUSTERS = [
+    # name, her bone families, anchor joint, strip centres across x (glTF), spare joints, spring Hz, damping ratio,
+    # largest swing (degrees), share of the skin the strand takes at the free end, and how fast that grows along it
+    dict(name="cape", fams=("F_", "F"), anchor=6, strips=[-0.20, 0.0, 0.20], joints=[110, 47, 48], freq=2.2, damp=0.45, max_deg=24, share=0.85, power=1.3),
+    dict(name="train", fams=("后摆",), anchor=PELVIS, strips=[-0.22, 0.22], joints=[49, 50], freq=2.0, damp=0.5, max_deg=22, share=0.80, power=1.2),
+    dict(name="hair", fams=("HairE",), anchor=HEAD, strips=[-0.07, 0.07], joints=[51, 37], freq=3.5, damp=0.35, max_deg=26, share=0.80, power=1.2),
+    dict(name="pendants", fams=("Bone_PendantA", "Bone_PendantB", "Bone_PendantC"), anchor=HEAD, strips=[-0.15, 0.15], joints=[38, 39], freq=4.0, damp=0.30, max_deg=35, share=0.90, power=1.0),
+]
+
+
+def bone_family(name):
+    if re.match(r"^(D_|F_|S_)\d", name):
+        return name[:2]
+    if name.startswith("后摆"):
+        return "后摆"
+    if name.startswith("前裙"):
+        return "前裙"
+    m = re.match(r"^(Bone_[A-Za-z]+|HairE|F)", name)
+    return m.group(1) if m else None
+
+
+def strip_weights(x, centres):
+    """Linear partition of unity across strips by x (clamped beyond the outer ones)."""
+    n = len(centres)
+    w = np.zeros((len(x), n))
+    for i, xi in enumerate(x):
+        if xi <= centres[0]:
+            w[i, 0] = 1.0
+        elif xi >= centres[-1]:
+            w[i, -1] = 1.0
+        else:
+            k = int(np.searchsorted(centres, xi) - 1)
+            f = (xi - centres[k]) / (centres[k + 1] - centres[k])
+            w[i, k], w[i, k + 1] = 1.0 - f, f
+    return w
+
+
+def add_jiggle(rig, pos, joints, weights, sj, sw, sc):
+    """Skins the cluster vertices partly to their strand joints.  `pos` are the T-posed vertices (glTF axes).
+    Returns the new (sj, sw, sc) and the strand table [dict(joint, anchor, freq, damp, max_deg, pivot, tip)] (glTF axes)."""
+    fam_of = [bone_family(n) for n in rig.names]
+    n = len(pos)
+    extra = [dict() for _ in range(n)]  # vertex -> {strand joint: share}
+    strands = []
+    for c in CLUSTERS:
+        bones = [i for i, f in enumerate(fam_of) if f in c["fams"]]
+        mass = (np.isin(joints, bones) * weights).sum(axis=1)
+        sel = np.where(mass > 0.05)[0]
+        if len(sel) == 0:
+            continue
+        core = mass > 0.5
+        y_top, y_bot = pos[core, 1].max(), pos[core, 1].min()
+        f = np.clip((y_top - pos[sel, 1]) / max(y_top - y_bot, 1e-6), 0.0, 1.0)
+        tents = strip_weights(pos[sel, 0], c["strips"])
+        share = mass[sel] * c["share"] * f ** c["power"]
+        for k, jt in enumerate(c["joints"][: len(c["strips"])]):
+            wk = tents[:, k] * share
+            for v, w in zip(sel, wk):
+                if w > 1e-4:
+                    extra[v][jt] = extra[v].get(jt, 0.0) + float(w)
+            # the strand's pivot and free end: the top and bottom of the strip's own vertices along its length
+            mine = sel[(tents[:, k] > 0.5) & core[sel]]
+            if len(mine) < 8:
+                mine = sel[tents[:, k] > 0.25]
+            if len(mine) < 8:
+                continue
+            fm = np.clip((y_top - pos[mine, 1]) / max(y_top - y_bot, 1e-6), 0.0, 1.0)
+            top = pos[mine[fm < 0.08]].mean(axis=0) if (fm < 0.08).any() else pos[mine[np.argmin(fm)]]
+            bot = pos[mine[fm > 0.92]].mean(axis=0) if (fm > 0.92).any() else pos[mine[np.argmax(fm)]]
+            strands.append(dict(joint=jt, anchor=c["anchor"], freq=c["freq"], damp=c["damp"], max_deg=c["max_deg"], pivot=top, tip=bot, name=c["name"]))
+    sj2, sw2, sc2 = sj.copy(), sw.copy(), sc.copy()
+    for v in range(n):
+        if not extra[v]:
+            continue
+        total = min(sum(extra[v].values()), 0.95)
+        scale_x = sum(extra[v].values())
+        acc = {j: w * (total / scale_x) for j, w in extra[v].items()}
+        for k in range(int(sc[v])):
+            j = int(sj[v, k])
+            acc[j] = acc.get(j, 0.0) + sw[v, k] / 256.0 * (1.0 - total)
+        top = sorted(acc.items(), key=lambda t: -t[1])[:3]
+        tot = sum(w for _, w in top)
+        q = [w / tot * 256.0 for _, w in top]
+        qi = [int(x) for x in q]
+        for i in sorted(range(len(q)), key=lambda i: -(q[i] - qi[i]))[: 256 - sum(qi)]:
+            qi[i] += 1
+        keep = [(j, w) for (j, _), w in zip(top, qi) if w > 0]
+        sj2[v], sw2[v], sc2[v] = 0, 0, len(keep)
+        for i, (j, w) in enumerate(keep):
+            sj2[v, i], sw2[v, i] = j, w
+    return sj2, sw2, sc2, strands
+
+
 RATCHET_BOTTOM, RATCHET_TOP = 0.002, 1.416  # his bind-pose box in z (lauma_dump.txt); the engine fits her to exactly his box
 
 
@@ -392,6 +492,7 @@ def retarget(names, parent, bone_pos, pos, nrm, joints, weights, dump_path):
       pos, nrm      the vertices posed into the T pose (glTF axes)
       skin          (joints[n, 3] u8, weights[n, 3] u16, count[n] u8): Ratchet joints, weights summing to 256
       joints_game   [111, 3]: where each of his joints sits in her T pose (game axes, model frame)
+      jiggle        the spring strands (see CLUSTERS): joint, anchor, spring, pivot and free end (game axes, model frame)
       report        text for the converter's log
     """
     r_parent, r_rest = parse_dump(dump_path)
@@ -402,6 +503,7 @@ def retarget(names, parent, bone_pos, pos, nrm, joints, weights, dump_path):
     chains = build_chains(tg)
     fixed, kind = bone_maps(rig, chains)
     sj, sw, sc = vertex_skin(rig, fixed, kind, chains, pos, joints, weights)
+    sj, sw, sc, strands = add_jiggle(rig, pos_t, joints, weights, sj, sw, sc)
     ymin, ymax = float(pos_t[:, 1].min()), float(pos_t[:, 1].max())
     scale = (RATCHET_TOP - RATCHET_BOTTOM) / (ymax - ymin)
     jg = skeleton_positions(tg, r_parent, r_rest, scale, ymin)
@@ -415,4 +517,7 @@ def retarget(names, parent, bone_pos, pos, nrm, joints, weights, dump_path):
         "rig: leg length (hip to floor) hers {:.3f} m vs his {:.3f} m; shoulder height hers {:.3f} m vs his {:.3f} m".format(
             (tg[92][1] - ymin) * scale, r_rest[92][2], (tg[53][1] - ymin) * scale, r_rest[53][2]),
     ]
-    return dict(pos=pos_t, nrm=nrm_t, skin=(sj, sw, sc), joints_game=jg, report="\n".join(lines))
+    for st in strands:
+        st["pivot"], st["tip"] = to_game(np.asarray(st["pivot"])), to_game(np.asarray(st["tip"]))
+    lines.append("rig: jiggle strands: " + ", ".join(f"{st['name']}->{st['joint']}(len {np.linalg.norm(st['tip'] - st['pivot']) * scale:.2f} m)" for st in strands))
+    return dict(pos=pos_t, nrm=nrm_t, skin=(sj, sw, sc), joints_game=jg, jiggle=strands, report="\n".join(lines))

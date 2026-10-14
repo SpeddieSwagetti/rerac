@@ -994,6 +994,18 @@ pub fn evaluate_posed(class: &MobyAnimClass, s: &AnimState, snap: Option<&MobyFr
 
     apply_layers(class, layers, &mut rec[..jc.min(SPR_RECORDS)]);
     apply_modifiers(mods, &mut rec[..jc.min(SPR_RECORDS)], jc, false);
+    // A guarded class's pinned joints keep their rest translation and scale whatever the keys, layers and modifiers did.
+    if let Some(pins) = pinned_joints(class) {
+        for &j in &pins {
+            let j = j as usize;
+            if valid(j) {
+                rec[j][1] = UNIT_SCALE;
+                rec[j][2] = bits3w(class.rest[j], class.parent_word[j]);
+                post_a[j] = UNIT_SCALE;
+                post_b[j] = UNIT_SCALE;
+            }
+        }
+    }
 
     // Local matrices and the chain (§6.5), joints in index order. `MobyProc`'s own build (0x268690..0x26876c) scales
     // the rows by the record's scale without testing its presence word: a joint without a scale record holds (1, 1, 1)
@@ -1041,17 +1053,21 @@ pub fn evaluate_posed(class: &MobyAnimClass, s: &AnimState, snap: Option<&MobyFr
             f.map(|r| r.map(f32::from_bits))
         })
         .collect();
+    apply_jiggle(class, &mut out);
     apply_floor_guard(class, &mut out);
     out
 }
 
-/// A floor guard for a replacement hero model (`rc-engine`'s `hero_model`): sample points on the soles of the feet, in
-/// bind space, each on the joint that carries it. A pose that puts the lowest of them under `floor` is lifted by the
-/// difference (at most `max_lift`) so the feet stand on the ground in every animation, in the game and in the
-/// cutscenes alike. A pose whose lowest point hovers within `pull_band` above the floor is eased down toward it (by at
-/// most a quarter of the band, continuously: nothing at the floor or at the band's top), so a foot that should be planted
-/// but floats a little is; a pose higher than the band (a jump, a fall) is untouched. Only the class it was made for (its joint
-/// count and the rest translation of joint 1) is lifted; with no guard set the evaluation is the game's, exactly.
+/// A guard for a replacement hero model (`rc-engine`'s `hero_model`), applied to the palette of the one class it was made
+/// for (its joint count and the rest translation of joint 1; with no guard set the evaluation is the game's, exactly):
+///
+/// * **Floor.** Sample points on the soles of the feet, in bind space, each on the joint that carries it. A pose that
+///   puts the lowest of them under `floor` is lifted by the difference (at most `max_lift`), so the feet stand on the
+///   ground in every animation, in the game and in the cutscenes alike. A pose whose lowest point hovers up to `snap`
+///   above the floor is lowered onto it, and between `snap` and `band` the lowering fades out to nothing (continuously),
+///   so a foot that should be planted is, and a jump or a fall leaves the ground smoothly.
+/// * **Pins.** Joints whose translation and scale are held at the class's rest values whatever the keys, layers or
+///   runtime modifiers say: only their rotation animates, so nothing can stretch them (a neck, say).
 #[derive(Clone, Debug)]
 pub struct FloorGuard {
     pub joint_count: usize,
@@ -1063,8 +1079,14 @@ pub struct FloorGuard {
     pub floor: f32,
     /// Largest lift, packed units.
     pub max_lift: f32,
-    /// Height above the floor within which a hovering pose is eased down, packed units (0: never lowered).
-    pub pull_band: f32,
+    /// Height above the floor up to which a hovering pose is lowered onto it, packed units (0: never lowered).
+    pub snap: f32,
+    /// Height above the floor at which the lowering has faded out, packed units (> `snap`).
+    pub band: f32,
+    /// False: no floor handling (pins still apply).
+    pub floor_on: bool,
+    /// Joints held at their rest translation and scale.
+    pub pins: Vec<u8>,
 }
 
 static FLOOR_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -1077,14 +1099,27 @@ pub fn set_floor_guard(g: Option<FloorGuard>) {
     FLOOR_ON.store(on, std::sync::atomic::Ordering::Release);
 }
 
-/// Lifts the whole palette in z when the guarded class's foot points are under the floor.
+/// The joints the guard pins for this class, if it is the guarded one.
+fn pinned_joints(class: &MobyAnimClass) -> Option<Vec<u8>> {
+    if !FLOOR_ON.load(std::sync::atomic::Ordering::Acquire) {
+        return None;
+    }
+    let guard = FLOOR.read().unwrap_or_else(|e| e.into_inner());
+    let g = guard.as_ref()?;
+    if g.pins.is_empty() || class.joint_count != g.joint_count || class.rest.get(1).map(|r| r.map(f32::to_bits)) != Some(g.rest1) {
+        return None;
+    }
+    Some(g.pins.clone())
+}
+
+/// Moves the whole palette in z for the guarded class's foot points: up from under the floor, down onto it when they hover.
 fn apply_floor_guard(class: &MobyAnimClass, out: &mut [Rows]) {
     if !FLOOR_ON.load(std::sync::atomic::Ordering::Acquire) {
         return;
     }
     let guard = FLOOR.read().unwrap_or_else(|e| e.into_inner());
     let Some(g) = guard.as_ref() else { return };
-    if class.joint_count != g.joint_count || class.rest.get(1).map(|r| r.map(f32::to_bits)) != Some(g.rest1) {
+    if !g.floor_on || g.points.is_empty() || class.joint_count != g.joint_count || class.rest.get(1).map(|r| r.map(f32::to_bits)) != Some(g.rest1) {
         return;
     }
     let mut low = f32::MAX;
@@ -1094,9 +1129,9 @@ fn apply_floor_guard(class: &MobyAnimClass, out: &mut [Rows]) {
     }
     let shift = if low < g.floor {
         (g.floor - low).min(g.max_lift)
-    } else if low < g.floor + g.pull_band {
+    } else if low < g.floor + g.band {
         let d = low - g.floor;
-        -d * (1.0 - d / g.pull_band)
+        if d <= g.snap { -d } else { -d * (1.0 - (d - g.snap) / (g.band - g.snap).max(1e-6)) }
     } else {
         0.0
     };
@@ -1105,6 +1140,164 @@ fn apply_floor_guard(class: &MobyAnimClass, out: &mut [Rows]) {
             f[3][2] += shift;
         }
     }
+}
+
+/// One spring strand of a replacement hero model's cloth or hair: a spare joint (`joint`) whose palette is its `anchor`
+/// joint's, swung about the strand's `pivot` so that its free end (`tip`) trails the rigid position like a damped
+/// spring. Positions are bind-space packed units; `max_deg` is the largest swing, `freq` / `damp` the spring (Hz and
+/// damping ratio).
+#[derive(Clone, Copy, Debug)]
+pub struct JiggleStrand {
+    pub joint: u8,
+    pub anchor: u8,
+    pub freq: f32,
+    pub damp: f32,
+    pub max_deg: f32,
+    pub pivot: [f32; 3],
+    pub tip: [f32; 3],
+}
+
+/// The strands of the class (identified like [`FloorGuard`]), how much of the spring shows (`amount`: 0 = rigid,
+/// 1 = as tuned, up to 2) and a frequency multiplier (`stiffness`).
+#[derive(Clone, Debug)]
+pub struct JiggleSetup {
+    pub joint_count: usize,
+    pub rest1: [u32; 3],
+    pub strands: Vec<JiggleStrand>,
+    pub amount: f32,
+    pub stiffness: f32,
+}
+
+struct JiggleSim {
+    setup: JiggleSetup,
+    /// The free end of each strand (posed model space) and its velocity.
+    p: Vec<[f32; 3]>,
+    w: Vec<[f32; 3]>,
+    started: bool,
+    last: Option<std::time::Instant>,
+}
+
+static JIGGLE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static JIGGLE: std::sync::Mutex<Option<JiggleSim>> = std::sync::Mutex::new(None);
+
+/// Installs (or, with `None`, removes) the jiggle strands.
+pub fn set_jiggle(setup: Option<JiggleSetup>) {
+    let on = setup.is_some();
+    let sim = setup.map(|setup| {
+        let n = setup.strands.len();
+        JiggleSim { setup, p: vec![[0.0; 3]; n], w: vec![[0.0; 3]; n], started: false, last: None }
+    });
+    *JIGGLE.lock().unwrap_or_else(|e| e.into_inner()) = sim;
+    JIGGLE_ON.store(on, std::sync::atomic::Ordering::Release);
+}
+
+fn point_through(f: &Rows, p: [f32; 3]) -> [f32; 3] {
+    [0, 1, 2].map(|k| p[0] * f[0][k] + p[1] * f[1][k] + p[2] * f[2][k] + f[3][k])
+}
+
+/// `base` turned about the point `a` by the rotation that takes the unit vector `from` to `to` (the palette maps a bind
+/// point `v` to `v * rows + translation`; the rotated palette maps it to `rot(v * rows + translation - a) + a`).
+fn rotate_rows_about(base: &Rows, a: [f32; 3], from: [f32; 3], to: [f32; 3]) -> Rows {
+    let ax = [from[1] * to[2] - from[2] * to[1], from[2] * to[0] - from[0] * to[2], from[0] * to[1] - from[1] * to[0]];
+    let s = (ax[0] * ax[0] + ax[1] * ax[1] + ax[2] * ax[2]).sqrt();
+    if s < 1e-6 {
+        return *base;
+    }
+    let c = (from[0] * to[0] + from[1] * to[1] + from[2] * to[2]).clamp(-1.0, 1.0);
+    let k = [ax[0] / s, ax[1] / s, ax[2] / s];
+    let t = 1.0 - c;
+    let m = [
+        [c + k[0] * k[0] * t, k[0] * k[1] * t - k[2] * s, k[0] * k[2] * t + k[1] * s],
+        [k[1] * k[0] * t + k[2] * s, c + k[1] * k[1] * t, k[1] * k[2] * t - k[0] * s],
+        [k[2] * k[0] * t - k[1] * s, k[2] * k[1] * t + k[0] * s, c + k[2] * k[2] * t],
+    ];
+    let turn = |v: [f32; 3]| [0, 1, 2].map(|i| m[i][0] * v[0] + m[i][1] * v[1] + m[i][2] * v[2]);
+    let mut out = *base;
+    for r in 0..3 {
+        let v = turn([base[r][0], base[r][1], base[r][2]]);
+        out[r][..3].copy_from_slice(&v);
+    }
+    let d = turn([base[3][0] - a[0], base[3][1] - a[1], base[3][2] - a[2]]);
+    for q in 0..3 {
+        out[3][q] = d[q] + a[q];
+    }
+    out
+}
+
+fn norm3(v: [f32; 3]) -> f32 { (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt() }
+
+/// Gives each strand joint of the jiggle class its anchor's palette swung by the spring. Time is the wall clock (the
+/// pose is evaluated several times a frame; a step runs at most every 4 ms, and a gap over 0.25 s restarts the strands
+/// at rest), and the strands only see motion inside the model's own space (the body's bob, turn, crouch and swing), not
+/// the actor's travel through the world.
+fn apply_jiggle(class: &MobyAnimClass, out: &mut [Rows]) {
+    if !JIGGLE_ON.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    let mut guard = JIGGLE.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(sim) = guard.as_mut() else { return };
+    if class.joint_count != sim.setup.joint_count || class.rest.get(1).map(|r| r.map(f32::to_bits)) != Some(sim.setup.rest1) {
+        return;
+    }
+    let now = std::time::Instant::now();
+    let dt = sim.last.map_or(0.0, |t| now.duration_since(t).as_secs_f32());
+    let fresh = !sim.started || dt > 0.25;
+    let step = fresh || dt >= 0.004;
+    if step {
+        sim.last = Some(now);
+    }
+    let (amount, stiffness) = (sim.setup.amount, sim.setup.stiffness);
+    for i in 0..sim.setup.strands.len() {
+        let s = sim.setup.strands[i];
+        let (a, jn) = (s.anchor as usize, s.joint as usize);
+        if a >= out.len() || jn >= out.len() {
+            continue;
+        }
+        let base = out[a];
+        let apt = point_through(&base, s.pivot);
+        let tgt = point_through(&base, s.tip);
+        let d0 = [tgt[0] - apt[0], tgt[1] - apt[1], tgt[2] - apt[2]];
+        let len = norm3(d0);
+        if len < 1e-3 {
+            out[jn] = base;
+            continue;
+        }
+        let u0 = [d0[0] / len, d0[1] / len, d0[2] / len];
+        if fresh {
+            sim.p[i] = tgt;
+            sim.w[i] = [0.0; 3];
+        } else if step {
+            let omega = std::f32::consts::TAU * s.freq * stiffness;
+            let (k, c) = (omega * omega, 2.0 * s.damp * omega);
+            let n = ((dt / (1.0 / 120.0)).ceil() as usize).clamp(1, 8);
+            let h = dt.min(0.1) / n as f32;
+            for _ in 0..n {
+                for q in 0..3 {
+                    let acc = k * (tgt[q] - sim.p[i][q]) - c * sim.w[i][q];
+                    sim.w[i][q] += acc * h;
+                    sim.p[i][q] += sim.w[i][q] * h;
+                }
+            }
+        }
+        // The free end stays the strand's length from the pivot.
+        let v = [sim.p[i][0] - apt[0], sim.p[i][1] - apt[1], sim.p[i][2] - apt[2]];
+        let vl = norm3(v);
+        let u1 = if vl > 1e-6 { [v[0] / vl, v[1] / vl, v[2] / vl] } else { u0 };
+        sim.p[i] = [apt[0] + u1[0] * len, apt[1] + u1[1] * len, apt[2] + u1[2] * len];
+        // The deflection from rigid, limited to the largest swing and scaled by the amount.
+        let chord_max = 2.0 * (s.max_deg.to_radians() * 0.5).sin();
+        let mut dv = [u1[0] - u0[0], u1[1] - u0[1], u1[2] - u0[2]];
+        let dl = norm3(dv);
+        if dl > chord_max && dl > 0.0 {
+            let f = chord_max / dl;
+            dv = dv.map(|c| c * f);
+        }
+        let mut u = [u0[0] + dv[0] * amount, u0[1] + dv[1] * amount, u0[2] + dv[2] * amount];
+        let ul = norm3(u);
+        u = if ul > 1e-6 { u.map(|c| c / ul) } else { u0 };
+        out[jn] = rotate_rows_about(&base, apt, u0, u);
+    }
+    sim.started = true;
 }
 
 /// The runtime pose layers (§6.4) on the local records `[q, inherited scale, translation, _]`, in list order.
@@ -1177,17 +1370,21 @@ mod tests {
     fn floor_guard_lifts_only_below_the_floor() {
         let class = |r1: [f32; 3]| MobyAnimClass { joint_count: 2, skeleton: vec![IDENTITY; 2], rest: vec![[0.0; 3], r1], parent_word: vec![0, 0x7000_0000], sequences: Vec::new() };
         let mine = class([1.5, 2.5, 3.5]);
-        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [1.5f32, 2.5, 3.5].map(f32::to_bits), points: vec![(1, [0.0, 0.0, 0.0])], floor: 10.0, max_lift: 25.0, pull_band: 8.0 }));
+        set_floor_guard(Some(FloorGuard { joint_count: 2, rest1: [1.5f32, 2.5, 3.5].map(f32::to_bits), points: vec![(1, [0.0, 0.0, 0.0])], floor: 10.0, max_lift: 25.0, snap: 4.0, band: 12.0, floor_on: true, pins: Vec::new() }));
         let pose = |z: f32| { let mut v = vec![IDENTITY; 2]; v[1][3][2] = z; v };
         let mut low = pose(4.0);
         apply_floor_guard(&mine, &mut low);
         assert_eq!((low[0][3][2], low[1][3][2]), (6.0, 10.0), "lifted by 6, every joint");
         let mut hover = pose(12.0);
         apply_floor_guard(&mine, &mut hover);
-        assert_eq!(hover[1][3][2], 10.5, "hovering 2 above the floor: eased down by 2 * (1 - 2/8)");
+        assert_eq!(hover[1][3][2], 10.0, "hovering 2 above the floor, within the snap: lowered onto it");
+        let mut fading = pose(18.0);
+        apply_floor_guard(&mine, &mut fading);
+        assert_eq!(fading[1][3][2], 14.0, "8 above: between snap and band, lowered by 8 * (1 - 4/8)");
         let mut flying = pose(30.0);
         apply_floor_guard(&mine, &mut flying);
         assert_eq!(flying[1][3][2], 30.0, "above the band: untouched");
+        assert!(pinned_joints(&mine).is_none(), "no pins set");
         let mut deep = pose(-100.0);
         apply_floor_guard(&mine, &mut deep);
         assert_eq!(deep[1][3][2], -75.0, "the lift is capped");
@@ -1198,6 +1395,22 @@ mod tests {
         let mut off = pose(4.0);
         apply_floor_guard(&mine, &mut off);
         assert_eq!(off[1][3][2], 4.0, "no guard, no change");
+    }
+
+    /// The palette of a jiggle strand turns about its pivot: a quarter turn about z takes the x row to y and the y row to
+    /// -x, leaves the pivot where it is, and no change of direction leaves the palette alone.
+    #[test]
+    fn jiggle_rotation_turns_the_palette_about_the_pivot() {
+        let mut base = IDENTITY;
+        base[3] = [1.0, 0.0, 0.0, 1.0];
+        let r = rotate_rows_about(&base, [1.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-5;
+        assert!(near(r[0][0], 0.0) && near(r[0][1], 1.0), "x row -> y: {:?}", r[0]);
+        assert!(near(r[1][0], -1.0) && near(r[1][1], 0.0), "y row -> -x: {:?}", r[1]);
+        assert!(near(r[3][0], 1.0) && near(r[3][1], 0.0) && near(r[3][3], 1.0), "pivot fixed: {:?}", r[3]);
+        let away = rotate_rows_about(&base, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+        assert!(near(away[3][0], 0.0) && near(away[3][1], 1.0), "a point away from the pivot swings with it: {:?}", away[3]);
+        assert_eq!(rotate_rows_about(&base, [0.0; 3], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0]), base);
     }
 
     #[test]
