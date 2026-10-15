@@ -42,7 +42,8 @@
 //! (0: rigid), `RC_LAUMA_JIGGLE_STIFF=<f>` (default 1) speeds the springs; the bust has its own pair, `RC_LAUMA_BUST=<f>` and
 //! `RC_LAUMA_BUST_STIFF=<f>` (same ranges and defaults), so either can be turned up or off alone; `RC_LAUMA_TOON=0` turns off her Genshin-style
 //! cel shading and outline, `RC_LAUMA_OUTLINE=<metres>` (default 0.010, 0 = none) is the outline's thickness and
-//! `RC_LAUMA_OUTLINE_FACE=<f>` (default 0.5) how much thinner the face's line is; `RC_LAUMA_BUST_GROW=<f>`
+//! `RC_LAUMA_OUTLINE_FACE=<f>` (default 0.5) how much thinner the face's line is and `RC_LAUMA_OUTLINE_HAIR=<f>`
+//! (default 0.6) the hair's and antlers'; `RC_LAUMA_BUST_GROW=<f>`
 //! (default 0.12, 0 = off) is how much her bust grows with each consecutive side flip, up to `RC_LAUMA_BUST_GROW_MAX` (default 2) times
 //! its size, and a back flip (or any other move) resets it; `RC_LAUMA_FLOOR=0` turns the floor guard off,
 //! `RC_LAUMA_FLOOR_SNAP=<metres>` (default 0.05) is how far above the floor a hovering foot is lowered onto it,
@@ -342,31 +343,37 @@ pub const TOON_OUTLINE: i32 = -1001;
 /// Materials that get an outline: the face skin, the hair and head ornaments, the body and the baked skin. Not the eyes
 /// (6, 7), the small face cards, or the cloth (15), which are thin sheets whose shell would double them.
 const OUTLINE_MATERIALS: [u32; 7] = [0, 8, 9, 10, 11, 12, 13];
+/// The hair and head ornaments (antlers): thin cards and tubes whose line is thinner still (`RC_LAUMA_OUTLINE_HAIR`).
+const OUTLINE_HAIR_MATERIALS: [u32; 3] = [8, 9, 10];
 /// The face skin's outline is this much thinner than the rest's (the face needs a lighter line).
 const OUTLINE_FACE_MATERIAL: u32 = 0;
 
 /// The outline shell: her mesh again with every vertex pushed out along its smoothed normal (the average over vertices
-/// at the same position, so the hull does not tear at UV seams or hard edges) by `thickness` metres (`face_scale` times
-/// that for vertices only the face skin uses), as a second packet. The shader draws only the half of it whose normal
+/// at the same position whose normals do not point the opposite way: a thin card has a front and a back at one position,
+/// and averaging those would cancel to nothing and send the vertex in a random direction) by `thickness` metres
+/// (`face_scale` times that for vertices only the face skin uses, `hair_scale` times for the hair's), as a second packet. The shader draws only the half of it whose normal
 /// faces away from the camera, flat dark: the classic inverted hull, with the facing test on the normal because the
 /// moby pipeline does not cull. Returns `None` when no outline material has a triangle.
-fn build_outline(a: &Asset, fit: &Fit, inv: f32, skin_of: &dyn Fn(usize) -> MobySkin, thickness: f32, face_scale: f32) -> Option<MobySubmesh> {
+fn build_outline(a: &Asset, fit: &Fit, inv: f32, skin_of: &dyn Fn(usize) -> MobySkin, thickness: f32, face_scale: f32, hair_scale: f32) -> Option<MobySubmesh> {
     let tris: Vec<[u32; 4]> = a.tris.iter().copied().filter(|t| OUTLINE_MATERIALS.contains(&t[3])).collect();
     if tris.is_empty() {
         return None;
     }
     let key = |p: &[f32; 3]| [(p[0] * 2000.0).round() as i32, (p[1] * 2000.0).round() as i32, (p[2] * 2000.0).round() as i32];
-    let mut sum: std::collections::HashMap<[i32; 3], [f32; 3]> = std::collections::HashMap::new();
+    let unit = |n: &[f32; 3]| {
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
+        [n[0] / l, n[1] / l, n[2] / l]
+    };
+    let mut at: std::collections::HashMap<[i32; 3], Vec<[f32; 3]>> = std::collections::HashMap::new();
     for (p, n) in a.pos.iter().zip(&a.nrm) {
-        let e = sum.entry(key(p)).or_insert([0.0; 3]);
-        for k in 0..3 {
-            e[k] += n[k];
-        }
+        at.entry(key(p)).or_default().push(unit(n));
     }
-    let (mut face, mut other) = (vec![false; a.pos.len()], vec![false; a.pos.len()]);
+    // 1 = face skin, 2 = hair, 4 = anything else, per vertex over the triangles that use it.
+    let mut kinds = vec![0u8; a.pos.len()];
     for t in &tris {
+        let k = if t[3] == OUTLINE_FACE_MATERIAL { 1 } else if OUTLINE_HAIR_MATERIALS.contains(&t[3]) { 2 } else { 4 };
         for &v in &t[..3] {
-            if t[3] == OUTLINE_FACE_MATERIAL { face[v as usize] = true } else { other[v as usize] = true }
+            kinds[v as usize] |= k;
         }
     }
     let vertices = a
@@ -375,10 +382,17 @@ fn build_outline(a: &Asset, fit: &Fit, inv: f32, skin_of: &dyn Fn(usize) -> Moby
         .zip(&a.uv)
         .enumerate()
         .map(|(i, (p, t))| {
-            let s = sum[&key(p)];
-            let len = (s[0] * s[0] + s[1] * s[1] + s[2] * s[2]).sqrt().max(1e-6);
-            let n = [s[0] / len, s[1] / len, s[2] / len];
-            let width = thickness * if face[i] && !other[i] { face_scale } else { 1.0 } / fit.scale;
+            let own = unit(&a.nrm[i]);
+            let mut s = [0.0f32; 3];
+            for m in &at[&key(p)] {
+                if own[0] * m[0] + own[1] * m[1] + own[2] * m[2] > -0.3 {
+                    for k in 0..3 {
+                        s[k] += m[k];
+                    }
+                }
+            }
+            let n = if s[0] * s[0] + s[1] * s[1] + s[2] * s[2] > 1e-4 { unit(&s) } else { own };
+            let width = thickness * match kinds[i] { 1 => face_scale, 2 => hair_scale, _ => 1.0 } / fit.scale;
             let q = [p[0] + n[0] * width, p[1] + n[1] * width, p[2] + n[2] * width];
             let (x, y) = (q[0] * fit.cos - q[1] * fit.sin, q[0] * fit.sin + q[1] * fit.cos);
             let packed = [x * fit.scale * inv, y * fit.scale * inv, (q[2] * fit.scale + fit.dz) * inv].map(|c| c.round().clamp(-32768.0, 32767.0));
@@ -856,13 +870,15 @@ pub fn inject(core: &LevelCore, core_data: &[u8], textures: &mut Vec<LevelTextur
     let (mut sub, clamped) = build_submesh(asset, &fit, 1.0 / unit, &skin_of);
     // Genshin-style look: RC_LAUMA_TOON=0 turns cel shading and the outline off; RC_LAUMA_OUTLINE=<metres, default 0.010,
     // 0 = no outline> is the outline's thickness at her normal size (it grows with RC_LAUMA_SCALE; the face's line is
-    // RC_LAUMA_OUTLINE_FACE=<default 0.5> times as thick). The shell is built here, so these are read at load.
+    // RC_LAUMA_OUTLINE_FACE=<default 0.5> times as thick, the hair's and antlers' RC_LAUMA_OUTLINE_HAIR=<default 0.6>). The shell is built here, so these are read at load.
     let toon = env_f32("RC_LAUMA_TOON", 1.0) > 0.5;
     let outline_m = env_f32("RC_LAUMA_OUTLINE", 0.010);
     let outline_m = if outline_m.is_finite() { outline_m.clamp(0.0, 0.05) } else { 0.010 };
     let face_scale = env_f32("RC_LAUMA_OUTLINE_FACE", 0.5);
     let face_scale = if face_scale.is_finite() { face_scale.clamp(0.0, 2.0) } else { 0.5 };
-    let shell = if toon && outline_m > 0.0 { build_outline(asset, &fit, 1.0 / unit, &skin_of, outline_m * total, face_scale) } else { None };
+    let hair_scale = env_f32("RC_LAUMA_OUTLINE_HAIR", 0.6);
+    let hair_scale = if hair_scale.is_finite() { hair_scale.clamp(0.0, 2.0) } else { 0.6 };
+    let shell = if toon && outline_m > 0.0 { build_outline(asset, &fit, 1.0 / unit, &skin_of, outline_m * total, face_scale, hair_scale) } else { None };
     if toon {
         sub.initial_texture = TOON_BODY;
     }
@@ -1118,7 +1134,7 @@ mod tests {
         };
         let fit = Fit { cos: 1.0, sin: 0.0, scale: 1.0, dz: 0.0 };
         let skin = |_: usize| MobySkin::default();
-        let shell = build_outline(&asset, &fit, 1000.0, &skin, 0.01, 0.5).expect("a shell");
+        let shell = build_outline(&asset, &fit, 1000.0, &skin, 0.01, 0.5, 0.5).expect("a shell");
         assert_eq!(shell.initial_texture, TOON_OUTLINE);
         assert_eq!(shell.triangles.len(), 1, "the eye material (6) has no outline");
         // vertices 0 and 3 share a position: their normals average to (1,0,1)/sqrt2, so both move the same way
@@ -1127,9 +1143,30 @@ mod tests {
         assert_eq!((v0.x, v0.z), (7, 7), "0.01 m along (1,0,1)/sqrt2 is 7 packed units each");
         // a vertex only a face-material triangle uses gets the thinner line
         let face = Asset { tris: vec![[0, 1, 2, 0]], ..asset };
-        let thin = build_outline(&face, &fit, 1000.0, &skin, 0.01, 0.5).unwrap();
+        let thin = build_outline(&face, &fit, 1000.0, &skin, 0.01, 0.5, 0.5).unwrap();
         assert_eq!(thin.vertices[1].z, 5, "face skin: half of 10");
-        assert!(build_outline(&Asset { tris: vec![[0, 1, 2, 15]], ..face }, &fit, 1000.0, &skin, 0.01, 0.5).is_none(), "cloth has none");
+        assert!(build_outline(&Asset { tris: vec![[0, 1, 2, 15]], ..face }, &fit, 1000.0, &skin, 0.01, 0.5, 0.5).is_none(), "cloth has none");
+    }
+
+    /// A thin card has a front and a back at one position with opposite normals: they must not be averaged (the sum is
+    /// nothing, so the push direction would be arbitrary): each side is pushed along its own normal. Hair is thinner.
+    #[test]
+    fn outline_shell_keeps_the_two_sides_of_a_card_apart() {
+        let card = Asset {
+            pos: vec![[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            nrm: vec![[0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0], [0.0, 0.0, -1.0]],
+            uv: vec![[0.0; 2]; 6],
+            tris: vec![[0, 1, 2, 8], [3, 5, 4, 8]],
+            mat_tex: [0; 16],
+            textures: Vec::new(),
+            rig: None,
+        };
+        let fit = Fit { cos: 1.0, sin: 0.0, scale: 1.0, dz: 0.0 };
+        let skin = |_: usize| MobySkin::default();
+        let shell = build_outline(&card, &fit, 1000.0, &skin, 0.01, 0.5, 0.5).unwrap();
+        assert_eq!((shell.vertices[0].z, shell.vertices[3].z), (5, -5), "hair: half of 10, each side along its own normal");
+        let plain = build_outline(&Asset { tris: vec![[0, 1, 2, 12], [3, 5, 4, 12]], ..card }, &fit, 1000.0, &skin, 0.01, 0.5, 0.5).unwrap();
+        assert_eq!((plain.vertices[0].z, plain.vertices[3].z), (10, -10), "body: the full 10");
     }
 
     /// A version 3 file adds the jiggle strands; a spring out of range is refused.

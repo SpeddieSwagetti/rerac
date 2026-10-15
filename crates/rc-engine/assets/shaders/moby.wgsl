@@ -25,6 +25,7 @@
 // defs select the half of the alpha-test split this draw is (gs_state.rs). Fog: the moby VU1 program (13859) clamps the F lane between the same
 // view-context fog terms as the tfrag program after adding the fog offset, so the tfrag fog uniform is reused.
 
+#import bevy_pbr::mesh_view_bindings::view
 #import bevy_pbr::{
     mesh_functions,
     view_transformations::{position_world_to_clip, position_world_to_view},
@@ -39,13 +40,34 @@
 const SKIN_TOON: u32 = 0x2000000u;
 const SKIN_OUTLINE: u32 = 0x4000000u;
 // Cel look (display-encoded colour space, like the texture): band edge and softness on `lam`, the shadow tint, an
-// overall gain, the rim strength, and the outline colour (multiplies the texture: a darkened albedo).
+// overall gain and the rim strength. The outline colour is derived from the texture it outlines (see OUTLINE_* below),
+// so it suits any model or material without per-material data.
+// The environment: the moby's own light drives the cel shading. Its brightness sets the level (lit luminance TOON_REF
+// and above is full daylight, lower is darker: TOON_LEVEL_POW curves it, TOON_MIN floors it) and its colour the hue
+// (TOON_HUE: 0 none, 1 fully): the lit side takes the colour of ambient + lights, the shadow side the ambient's
+// (blue at night under a blue ambient), and the shadow gets shallower the more the light is just ambient.
+const TOON_REF: f32 = 1.0;
+const TOON_MIN: f32 = 0.22;
+const TOON_LEVEL_POW: f32 = 0.8;
+const TOON_HUE: f32 = 0.9;
+// The outline shell is pushed this far (metres) away from the camera along the view ray: its screen position does not
+// change, but it never wins a depth test against the model it outlines (hair cards and antlers, which sit within a
+// few millimetres of what they outline, no longer show a thick or encroaching line).
+const OUTLINE_PUSH: f32 = 0.008;
 const TOON_THR: f32 = 0.34;
 const TOON_SOFT: f32 = 0.05;
 const TOON_SHADOW: vec3<f32> = vec3<f32>(0.68, 0.72, 0.90);
 const TOON_GAIN: f32 = 1.06;
 const TOON_RIM: f32 = 0.22;
-const OUTLINE_TINT: vec3<f32> = vec3<f32>(0.30, 0.21, 0.27);
+// Outline colour, from the albedo of the surface it outlines: its saturation is boosted (OUTLINE_SAT: pale skin turns
+// brown, lilac hair deep purple, a grey stays grey) and its brightness pulled to a darker target
+// OUTLINE_LUM_MIN + OUTLINE_LUM_SLOPE * albedo luminance (a bright albedo gets a mid-dark line, a dark one a darker
+// but never black one). The albedo is read at a blurred level (OUTLINE_LOD) so texture detail does not speckle the line;
+// a texture with a single level just gives its base one.
+const OUTLINE_SAT: f32 = 2.0;
+const OUTLINE_LUM_MIN: f32 = 0.12;
+const OUTLINE_LUM_SLOPE: f32 = 0.28;
+const OUTLINE_LOD: f32 = 3.0;
 
 struct MobyFog {
     // rgb = FOGCOL (display-encoded 0..1), w = 1 when fog is enabled.
@@ -109,6 +131,9 @@ struct MobyVertexOutput {
     // x = 0 plain, 1 cel-shaded, 2 outline shell; y = lambert term (0..1); z = how bright the moby's light is; w = view-space
     // normal z (> 0 faces the camera).
     @location(3) toon: vec4<f32>,
+    // The moby's ambient colour and its ambient + lights colour (colour/128; 1,1,1 where unlit), for the cel shading.
+    @location(4) amb: vec3<f32>,
+    @location(5) lit: vec3<f32>,
 }
 
 fn s16(x: i32) -> i32 { return (x << 16u) >> 16u; }
@@ -142,14 +167,16 @@ fn vertex(v: MobyVertex) -> MobyVertexOutput {
     let sp = clamp(trunc((m * vec4<f32>(v.position, 1.0)).xyz), vec3<f32>(-2147483520.0), vec3<f32>(2147483520.0));
     let pi = vec3<i32>(s16(i32(sp.x)), s16(i32(sp.y)), s16(i32(sp.z)));
     let world = ((*inst).model * vec4<f32>(vec3<f32>(pi), 1.0)).xyz;
-    out.position = position_world_to_clip(world);
+    // The outline shell (SKIN_OUTLINE) is moved away from the camera along the view ray: see OUTLINE_PUSH.
+    let is_toon = (v.skin.x & SKIN_TOON) != 0u;
+    let is_outline = (v.skin.x & SKIN_OUTLINE) != 0u;
+    let ray = normalize(world - view.world_position.xyz);
+    out.position = position_world_to_clip(select(world, world + ray * OUTLINE_PUSH, is_outline));
     // A class texture scroll (misc.w: s | t << 16, s16 in 1/4096: `FUN_00263d90`'s offset on the class's STs).
     let scroll = (*inst).misc.w;
     out.uv = v.uv + vec2<f32>(f32(s16(i32(scroll & 0xffffu))), f32(s16(i32(scroll >> 16u)))) / 4096.0;
 
     // Cel shading inputs (only read for flagged vertices).
-    let is_toon = (v.skin.x & SKIN_TOON) != 0u;
-    let is_outline = (v.skin.x & SKIN_OUTLINE) != 0u;
     var lam = 1.0;
     var bright = 1.0;
     let nz_a = normal_table[v.skin.x & 0xffu];
@@ -159,6 +186,8 @@ fn vertex(v: MobyVertex) -> MobyVertexOutput {
     let n_world = normalize(((*inst).model * vec4<f32>(n_posed, 0.0)).xyz);
     let n_view = position_world_to_view(world + n_world) - position_world_to_view(world);
     out.toon = vec4<f32>(select(0.0, select(1.0, 2.0, is_outline), is_toon), 1.0, 1.0, n_view.z);
+    out.amb = vec3<f32>(1.0);
+    out.lit = vec3<f32>(1.0);
 
     let mode = (*inst).misc.y;
     if (mode == 1u) {
@@ -181,6 +210,8 @@ fn vertex(v: MobyVertex) -> MobyVertexOutput {
         bright = dot((*inst).ambient.xyz / 128.0 + csum, lw);
         out.toon.y = lam;
         out.toon.z = bright;
+        out.amb = (*inst).ambient.xyz / 128.0;
+        out.lit = out.amb + csum;
         let c = vec4<f32>((*inst).ambient.xyz, alpha) + floor(s * q * 128.0);
         let mult = vec4<i32>(unpack4x8unorm(v.skin.w) * 255.0 + 0.5);
         let h = vec4<i32>(s16(i32(c.x)), s16(i32(c.y)), s16(i32(c.z)), s16(i32(c.w)));
@@ -215,16 +246,29 @@ fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
 fn fragment(in: MobyVertexOutput) -> @location(0) vec4<f32> {
     let t = textureSample(tex, tex_sampler, in.uv);
     var rgb = min(t.rgb * in.color.rgb, vec3<f32>(1.0));
+    let lw = vec3<f32>(0.299, 0.587, 0.114);
+    let lum_lit = max(dot(in.lit, lw), 0.001);
+    let level = pow(clamp(lum_lit / TOON_REF, TOON_MIN, 1.0), TOON_LEVEL_POW);
     if (in.toon.x > 1.5) {
-        // Outline shell: only the half whose normal faces away from the camera, flat darkened albedo.
+        // Outline shell: only the half whose normal faces away from the camera, flat, coloured from the albedo it
+        // outlines and dimmed with the scene's light (a night's outline must not glow against a dark body).
         if (in.toon.w > 0.0) { discard; }
-        rgb = t.rgb * OUTLINE_TINT;
+        let albedo = textureSampleLevel(tex, tex_sampler, in.uv, OUTLINE_LOD).rgb;
+        let lum = dot(albedo, lw);
+        let boosted = max(vec3<f32>(lum) + (albedo - vec3<f32>(lum)) * OUTLINE_SAT, vec3<f32>(0.0));
+        let target_lum = OUTLINE_LUM_MIN + OUTLINE_LUM_SLOPE * lum;
+        rgb = min(boosted * (target_lum / max(dot(boosted, lw), 0.02)) * mix(1.0, level, 0.6), vec3<f32>(1.0));
     } else if (in.toon.x > 0.5) {
         let band = smoothstep(TOON_THR - TOON_SOFT, TOON_THR + TOON_SOFT, in.toon.y);
-        let level = mix(1.0, clamp(in.toon.z, 0.6, 1.3), 0.35);
-        let shade = mix(TOON_SHADOW, vec3<f32>(1.0), band);
+        let lum_amb = max(dot(in.amb, lw), 0.001);
+        let lit_hue = in.lit / lum_lit;
+        let amb_hue = in.amb / lum_amb;
+        let depth_k = clamp(1.6 * (1.0 - lum_amb / lum_lit), 0.35, 1.0);
+        let shadow_mul = mix(vec3<f32>(1.0), TOON_SHADOW * mix(vec3<f32>(1.0), amb_hue, TOON_HUE), depth_k);
+        let lit_mul = mix(vec3<f32>(1.0), lit_hue, TOON_HUE);
+        let shade = mix(shadow_mul, lit_mul, band);
         let rim = pow(1.0 - clamp(abs(in.toon.w), 0.0, 1.0), 3.0) * TOON_RIM * (1.0 - 0.6 * band);
-        rgb = min(t.rgb * shade * (level * TOON_GAIN) + vec3<f32>(0.80, 0.90, 1.0) * rim * 0.25, vec3<f32>(1.0));
+        rgb = min(t.rgb * shade * (level * TOON_GAIN) + lit_hue * rim * 0.25, vec3<f32>(1.0));
     }
     if (fog.color.w > 0.5) {
         rgb = mix(fog.color.rgb, rgb, in.fog);
