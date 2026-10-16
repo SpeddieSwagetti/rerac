@@ -157,6 +157,12 @@ pub struct Weapons {
     pub reactive: super::reactive::Reactive,
     /// The Visibomb's pvars ([`super::visibomb`]).
     pub visibomb: super::visibomb::Visibomb,
+    /// Port-only weapon leveling ([`crate::weapon_level`]): the experience by item id (mirrored from
+    /// `GameState::weapon_xp` by the engine), the weapon that last used ammo (−1 none), and the levels gained this
+    /// tick as (item, new level) for the engine (gold at the maximum, then cleared).
+    pub xp: [i32; N],
+    pub last_fired: i32,
+    pub level_ups: Vec<(u8, u8)>,
 }
 
 impl Default for Weapons {
@@ -165,6 +171,7 @@ impl Default for Weapons {
             ammo: [0; N], uses_ammo: [false; N], used: [0; N], picked: [0; N], glove: Glove::default(), layers: [None; 5], nodes_made: 0, layer_fade: 0, layer_seq: 0,
             arm_item: 0, deferred: None, throws: 0, defs: Vec::new(), gold: [0; N], pyro: Default::default(), pending_draw: false, pending_idle: false,
             aim: None, aim_pos: [0.0; 3], blaster: Default::default(), ryno: Default::default(), devastator: Default::default(), tesla: Default::default(), pending_anim: None, markers: Default::default(), reactive: Default::default(), visibomb: Default::default(),
+            xp: [0; N], last_fired: -1, level_ups: Vec::new(),
         }
     }
 }
@@ -184,9 +191,23 @@ impl Weapons {
         if n <= *a {
             *a -= n;
             self.used[i] += n;
+            self.last_fired = id;
             return true;
         }
         false
+    }
+
+    /// Port-only leveling: one of Ratchet's attacks damaged an enemy. The experience goes to the weapon in his hand
+    /// (`held`, the hand item) when it uses ammo, else to the one that last used ammo (a thrown bomb, a flame that
+    /// keeps burning). Gold weapons are at the maximum already; reaching it queues a level-up for the engine.
+    pub fn credit_hit(&mut self, held: i32) {
+        let uses = |s: &Self, id: i32| usize::try_from(id).ok().filter(|&i| i < N).filter(|&i| s.uses_ammo[i]);
+        let Some(i) = uses(self, held).or_else(|| uses(self, self.last_fired)) else { return };
+        if self.gold[i] != 0 { return; }
+        let before = crate::weapon_level::level(self.xp[i]);
+        self.xp[i] = (self.xp[i] + crate::weapon_level::HIT_XP).min(crate::weapon_level::xp_cap());
+        let after = crate::weapon_level::level(self.xp[i]);
+        if after > before { self.level_ups.push((i as u8, after)); }
     }
 }
 

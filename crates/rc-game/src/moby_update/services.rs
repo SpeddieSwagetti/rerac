@@ -911,6 +911,9 @@ pub struct Services {
     pub pickups: crate::moby_update::classes::pickup::Globals,
     /// The last pickup banner request (`ShowBannerf`), for the HUD.
     pub pickups_banner: crate::moby_update::classes::pickup::Banner,
+    /// Port-only weapon leveling: damaging hits on creatures since the engine last took them
+    /// (`creature::damage::resolve`; the engine credits the weapon in hand, `Weapons::credit_hit`).
+    pub weapon_hits: u32,
     /// The buried bolt caches' globals (0x141390..98, the counter gp−0x5110): `classes::buried_bolts`.
     pub buried: crate::moby_update::classes::buried_bolts::Globals,
     /// The Sonic Summoner's mouse (0x1deb88): `classes::mouse`.
@@ -1012,6 +1015,7 @@ impl Services {
             interact: Default::default(),
             pickups: Default::default(),
             pickups_banner: Default::default(),
+            weapon_hits: 0,
             buried: Default::default(),
             mouse: Default::default(),
             units: Default::default(),

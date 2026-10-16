@@ -2315,6 +2315,8 @@ fn tick(
         p.game.hero.owned.0 = gs.0.global.owned;
         // The gold weapons 0x13e520 (by item id) as the hero code reads them (`Weapons::gold`; G-WPN-009).
         for (d, v) in p.game.hero.weapons.gold.iter_mut().zip(gs.0.global.gold_weapons.iter()) { *d = *v; }
+        // The weapon experience (port-only, `rc_game::weapon_level`) in; written back after the tick.
+        p.game.hero.weapons.xp = gs.0.weapon_xp;
         {
             // The moby side's view of the same table: the item offers and the hit resolver (`Counters::gold_weapons`), the
             // gold Suck Cannon 0x13e529 (item 9: ten slots) and the gold Morph-o-Ray 0x13e535 (item 21: the gold chickens).
@@ -2417,7 +2419,11 @@ fn tick(
 
     // The ammo the weapons used (0x249450: the ammo and the ammo-used stat 0x13dea0).
     if let Some(gs) = state.as_mut() {
+        // Weapon leveling: the damaging hits the moby loop counted go to the weapon in hand (or the last fired).
+        let hits = std::mem::take(&mut p.svc.weapon_hits);
+        let held = p.game.hero.items.slot.id;
         let w = &mut p.game.hero.weapons;
+        for _ in 0..hits { w.credit_hit(held); }
         if gs.0.global.ammo != w.ammo { gs.0.global.ammo = w.ammo; }
         if w.used.iter().any(|&u| u != 0) {
             for (t, u) in gs.0.global.ammo_used.iter_mut().zip(w.used.iter_mut()) { *t += std::mem::take(u); }
@@ -2425,6 +2431,14 @@ fn tick(
         // … and picked up (the ammo pickups 0x2db028: 0x13de08).
         if w.picked.iter().any(|&u| u != 0) {
             for (t, u) in gs.0.global.ammo_picked_up.iter_mut().zip(w.picked.iter_mut()) { *t += std::mem::take(u); }
+        }
+        // Weapon leveling: the experience back to the saved state; a weapon that reached its last level turns gold
+        // (the game's own gold flag, mirrored into `Weapons::gold` at the start of the next tick).
+        if gs.0.weapon_xp != w.xp { gs.0.weapon_xp = w.xp; }
+        for (item, level) in std::mem::take(&mut w.level_ups) {
+            if level >= rc_game::weapon_level::MAX_LEVEL {
+                if let Some(g) = gs.0.global.gold_weapons.get_mut(item as usize) { *g = 1; }
+            }
         }
     }
     // The melee entries' stats records (SetState 0x23cf98: 0x1416c0 = levels[8] 3007, misc 0/1, gadget 17).
