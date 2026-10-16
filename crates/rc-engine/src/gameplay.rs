@@ -2423,7 +2423,10 @@ fn tick(
         let hits = std::mem::take(&mut p.svc.weapon_hits);
         let held = p.game.hero.items.slot.id;
         let w = &mut p.game.hero.weapons;
-        for _ in 0..hits { w.credit_hit(held); }
+        // Testing: `RC_WEAPON_XP_MULT=n` makes every damaging hit worth n hits of experience (default 1).
+        static XP_MULT: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+        let mult = *XP_MULT.get_or_init(|| std::env::var("RC_WEAPON_XP_MULT").ok().and_then(|v| v.trim().parse().ok()).unwrap_or(1u32).clamp(1, 10_000));
+        for _ in 0..hits.saturating_mul(mult) { w.credit_hit(held); }
         if gs.0.global.ammo != w.ammo { gs.0.global.ammo = w.ammo; }
         if w.used.iter().any(|&u| u != 0) {
             for (t, u) in gs.0.global.ammo_used.iter_mut().zip(w.used.iter_mut()) { *t += std::mem::take(u); }

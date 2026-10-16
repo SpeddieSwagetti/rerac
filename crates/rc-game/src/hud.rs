@@ -1306,6 +1306,11 @@ impl HudState {
     fn sprite(frame: usize, x: i32, y: i32, w: i32, h: i32, alpha: i32, rot: Rot) -> Draw { Draw::Sprite { frame, x, y, w, h, alpha, rot } }
 
     /// `font_print_right` (regular font): `x − width`.
+    /// [`Self::text_right`] in a given font.
+    fn text_right_in(&self, font: Font, x: i32, y: i32, rgba: u32, text: &[u8], out: &mut Vec<Draw>) {
+        let w = self.assets.text_width(font, text);
+        out.push(Draw::Text { font, x: x - w, y, rgba, text: text.to_vec() });
+    }
     fn text_right(&self, x: i32, y: i32, rgba: u32, text: &[u8], out: &mut Vec<Draw>) {
         let w = self.assets.text_width(Font::Regular, text);
         out.push(Draw::Text { font: Font::Regular, x: x - w, y, rgba, text: text.to_vec() });
@@ -1495,25 +1500,37 @@ impl HudState {
         let (tx, ty) = (x + WEAPON_TEXT_D.0 + len, y + WEAPON_TEXT_D.1);
         self.text_right(tx + 1, ty + 1, shadow, &text, out);
         self.text_right(tx, ty, colour, &text, out);
-        // Port-only weapon leveling (after Ratchet & Clank 2's weapon HUD): the experience meter under the bar and the
-        // level "V#" at its right; gold weapons show a full gold meter.
+        // Port-only weapon leveling (after Ratchet & Clank 2's weapon HUD): a second, smaller capsule under the ammo's,
+        // the experience meter in the pause menu's slider style (grey frame, black well, glossy fill; orange, a
+        // brighter gold on gold weapons) and the level "V#" in the small font.
         let item = match s.element { Element::Weapon { item } => item as usize, _ => 0 };
         let xp = self.inputs.weapon_xp.get(item).copied().unwrap_or(0);
         let gold = self.inputs.gold.get(item).is_some_and(|&g| g != 0);
         let (cur, need) = crate::weapon_level::progress(xp, gold);
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
-        let my = y + 36;
-        let (mx0, mx1) = (x + 4, (x + 4 + x0 + lw - 34).max(x + 4));
+        let (ph, py0) = (24, y + 31);
+        let (lx, rx) = (x - 0x1c, x + 4 + x0 + lw + 32);
+        out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
+        out.push(Self::sprite(mid, lx + ph, py0, (rx - lx - 2 * ph).max(0), ph, bar_a, Rot::None));
+        out.push(Self::sprite(cap, rx - ph, py0, ph, ph, bar_a, Rot::R180));
+        let label_w = self.assets.text_width(Font::Small, &label);
+        self.text_right_in(Font::Small, tx + 1, py0 + 6, shadow, &label, out);
+        self.text_right_in(Font::Small, tx, py0 + 5, colour, &label, out);
+        let (mx0, my) = (x + 2, py0 + 7);
+        let mx1 = (tx - label_w - 6).max(mx0 + 6);
         // `fun_00200e08(…, 0)`'s whole-pixel corners (one pixel up and left of a sprite corner), as the boss meter.
         let px = |v: i32| v * 16 - 8;
         let alpha = (a.max(0) as u32) << 24;
-        let track = ((a / 2).max(0) as u32) << 24;
-        out.push(Draw::Rect16 { x0: px(mx0 - 1), y0: px(my - 1), x1: px(mx1 + 1), y1: px(my + 6), rgba: track });
-        let fill = (mx1 - mx0) * cur / need.max(1);
-        let fill_colour = if gold { 0x0040_d8ff } else { 0x0030_a0ff };
-        if 0 < fill { out.push(Draw::Rect16 { x0: px(mx0), y0: px(my), x1: px(mx0 + fill), y1: px(my + 5), rgba: alpha | fill_colour }); }
-        self.text_right(tx + 1, y + 32, shadow, &label, out);
-        self.text_right(tx, y + 31, colour, &label, out);
+        let rect = |x0: i32, y0: i32, x1: i32, y1: i32, c: u32, out: &mut Vec<Draw>| out.push(Draw::Rect16 { x0: px(x0), y0: px(y0), x1: px(x1), y1: px(y1), rgba: alpha | c });
+        rect(mx0, my, mx1, my + 10, 0x0070_7070, out);
+        rect(mx0 + 1, my + 1, mx1 - 1, my + 9, 0, out);
+        let fill = (mx1 - mx0 - 2) * cur / need.max(1);
+        if 0 < fill {
+            let (dark, main, shine) = if gold { (0x0010_a0c0, 0x0030_d0ff, 0x00b0_f8ff) } else { (0x0010_60c0, 0x0020_90ff, 0x00a0_e0ff) };
+            rect(mx0 + 1, my + 1, mx0 + 1 + fill, my + 2, dark, out);
+            rect(mx0 + 1, my + 2, mx0 + 1 + fill, my + 5, main, out);
+            rect(mx0 + 1, my + 5, mx0 + 1 + fill, my + 6, shine, out);
+        }
     }
 
     /// The banner part of 0x24fb50 (ramp ±0x80/ScaleTicks(8) per tick) and its draw 0x251b88. Not drawn (and not
