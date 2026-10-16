@@ -168,6 +168,13 @@ pub fn resolve(w: &mut World, id: MobyId, hit: Option<HitRecord>, d: usize, flag
     super::set_pi16(w, id, d + 0x16, cls as i16);
     super::set_pi16(w, id, d + 0x14, cls as i16);
     r.damage = f32::from_bits(rec.damage.0);
+    // Port-only weapon leveling: Ratchet's attacks (not the wrench, class 0x47) that damage a creature give the
+    // weapon in his hand experience (`crate::weapon_level`).
+    // (The world's hero is read-only here: the hit is counted in the services and the engine credits the weapon
+    // after the tick, `Weapons::credit_hit`.)
+    if r.damage > 0.0 && cls != 0x47 {
+        w.svc.weapon_hits += 1;
+    }
     if let Some(kr) = super::header(w, id).knock {
         super::set_pu8(w, id, kr + super::knock::k::BURN, (kind == 4) as u8);
     }

@@ -360,6 +360,8 @@ pub struct GameState {
     pub raw: BTreeMap<(Scope, i32), Vec<u8>>,
     /// Non-zero pad bytes of restored chunks, re-emitted by [`GameState::to_save_file`].
     pub pads: BTreeMap<(Scope, i32), Vec<u8>>,
+    /// Port-only (not in the card format): weapon experience by item id ([`crate::weapon_level`]).
+    pub weapon_xp: [i32; 37],
 }
 
 fn align4(n: usize) -> usize { (n + 3) & !3 }
@@ -367,7 +369,7 @@ fn align4(n: usize) -> usize { (n + 3) & !3 }
 impl GameState {
     /// All chunks zero (the RAM before a restore).
     pub fn zeroed(tables: ChunkTables) -> GameState {
-        GameState { tables, global: Global::zeroed(), levels: (0..LEVEL_SLOTS).map(|_| LevelState::zeroed()).collect(), raw: BTreeMap::new(), pads: BTreeMap::new() }
+        GameState { tables, global: Global::zeroed(), levels: (0..LEVEL_SLOTS).map(|_| LevelState::zeroed()).collect(), raw: BTreeMap::new(), pads: BTreeMap::new(), weapon_xp: [0; 37] }
     }
 
     /// New game (`load_and_initialize_level_chunk` 0x209370): restore the disc template
@@ -449,7 +451,10 @@ impl GameState {
         if h(0) != Some(self.tables.global_size()) || h(4) != Some(self.tables.level_size()) {
             return Err(FormatError::Invalid("save file: section sizes differ from the chunk tables".into()));
         }
-        Ok(self.restore(&SaveFile::parse(bytes)?))
+        let file = SaveFile::parse(bytes)?;
+        // The experience is not on the card: a loaded game starts every weapon at V1 (gold ones show V10).
+        self.weapon_xp = [0; 37];
+        Ok(self.restore(&file))
     }
 
     /// A state restored from `file` onto zeroed RAM.

@@ -392,6 +392,9 @@ pub struct Inputs {
     pub weapon: Option<(u16, i32, i32)>,
     /// The ammo table 0x13d428 by item: a weapon element's data word is its own item's (`item·4 + 0x13d428`).
     pub ammo: [i32; 37],
+    /// Port-only weapon leveling ([`crate::weapon_level`]): the experience by item id and the gold weapons 0x13e520.
+    pub weapon_xp: [i32; 37],
+    pub gold: [u8; 37],
     /// The vendor while it is open: its selected ammo entry (item, max ammo) or `None` (a weapon, or nothing); `None`
     /// outside the vendor. Its requests are its own (`OpenVendorMenu` / `VendorModeUpdate` / `VendorExit`).
     pub vendor: Option<Option<(u16, i32)>>,
@@ -463,6 +466,8 @@ impl Default for Inputs {
             bolts: 0,
             weapon: None,
             ammo: [0; 37],
+            weapon_xp: [0; 37],
+            gold: [0; 37],
             vendor: None,
             lang: 0,
             hero_state: 0,
@@ -552,6 +557,9 @@ pub struct HudState {
     /// Port-only: the game pixels the frame extends past the 512-wide screen on each side (16:9; 0 at 4:3, the TV's).
     /// The slots anchored left or right ([`ANCHOR_BITS`] 4 / 8) move out by it, to the frame's edges ([`Self::anchor`]).
     pub side_extra: i32,
+    /// Port-only weapon leveling: the levels last seen (the popup fires when one goes up) and whether they were read.
+    seen_levels: [u8; 37],
+    levels_seen: bool,
 }
 
 impl HudState {
@@ -566,6 +574,8 @@ impl HudState {
             bolt_anim: 0,
             weapon_handle: None,
             weapon_gate: 0,
+            seen_levels: [1; 37],
+            levels_seen: false,
             vendor_open: false,
             vendor_sel: None,
             vendor_handle: None,
@@ -927,6 +937,7 @@ impl HudState {
         self.inputs = inputs;
         self.sounds.clear();
         self.vsync = self.vsync.wrapping_add(1);
+        self.level_popups();
         self.frame_calls();
         // PromptTick 0x278eb8's slot part (and NpcTalkUpdate's): slot 12 requested, or kept up for 10 ticks.
         if self.prompt_show {
@@ -1209,6 +1220,21 @@ impl HudState {
         Self::ramp(s, BOLT_SLIDE_STEPS, BOLT_ALPHA_STEPS, down);
     }
 
+    /// Port-only weapon leveling: a banner popup when a weapon's level went up (the maximum: it turned gold). The first
+    /// tick only records the levels, so loading a game does not announce them.
+    fn level_popups(&mut self) {
+        let inp = self.inputs;
+        let now: [u8; 37] = std::array::from_fn(|i| crate::weapon_level::display_level(inp.weapon_xp[i], inp.gold[i] != 0));
+        if self.levels_seen {
+            if let Some(i) = (0..37).find(|&i| now[i] > self.seen_levels[i]) {
+                let text = crate::weapon_level::popup_text(i, now[i]);
+                self.show_banner(text.as_bytes(), Some(scale_ticks(240)));
+            }
+        }
+        self.seen_levels = now;
+        self.levels_seen = true;
+    }
+
     /// 0x2519c0.
     fn update_weapon(&mut self, i: usize) {
         let ammo = self.data(self.slots[i].element).unwrap_or(0);
@@ -1469,6 +1495,25 @@ impl HudState {
         let (tx, ty) = (x + WEAPON_TEXT_D.0 + len, y + WEAPON_TEXT_D.1);
         self.text_right(tx + 1, ty + 1, shadow, &text, out);
         self.text_right(tx, ty, colour, &text, out);
+        // Port-only weapon leveling (after Ratchet & Clank 2's weapon HUD): the experience meter under the bar and the
+        // level "V#" at its right; gold weapons show a full gold meter.
+        let item = match s.element { Element::Weapon { item } => item as usize, _ => 0 };
+        let xp = self.inputs.weapon_xp.get(item).copied().unwrap_or(0);
+        let gold = self.inputs.gold.get(item).is_some_and(|&g| g != 0);
+        let (cur, need) = crate::weapon_level::progress(xp, gold);
+        let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
+        let my = y + 36;
+        let (mx0, mx1) = (x + 4, (x + 4 + x0 + lw - 34).max(x + 4));
+        // `fun_00200e08(…, 0)`'s whole-pixel corners (one pixel up and left of a sprite corner), as the boss meter.
+        let px = |v: i32| v * 16 - 8;
+        let alpha = (a.max(0) as u32) << 24;
+        let track = ((a / 2).max(0) as u32) << 24;
+        out.push(Draw::Rect16 { x0: px(mx0 - 1), y0: px(my - 1), x1: px(mx1 + 1), y1: px(my + 6), rgba: track });
+        let fill = (mx1 - mx0) * cur / need.max(1);
+        let fill_colour = if gold { 0x0040_d8ff } else { 0x0030_a0ff };
+        if 0 < fill { out.push(Draw::Rect16 { x0: px(mx0), y0: px(my), x1: px(mx0 + fill), y1: px(my + 5), rgba: alpha | fill_colour }); }
+        self.text_right(tx + 1, y + 32, shadow, &label, out);
+        self.text_right(tx, y + 31, colour, &label, out);
     }
 
     /// The banner part of 0x24fb50 (ramp ±0x80/ScaleTicks(8) per tick) and its draw 0x251b88. Not drawn (and not
