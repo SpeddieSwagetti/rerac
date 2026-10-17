@@ -1652,7 +1652,7 @@ fn clip(a: [i32; 4], b: [i32; 4]) -> [i32; 4] { [a[0].max(b[0]), a[1].min(b[1]),
 fn translate(d: &Draw, ox: i32, oy: i32) -> Draw {
     let mut d = d.clone();
     match &mut d {
-        Draw::Sprite { x, y, .. } | Draw::Text { x, y, .. } | Draw::FxQuad { x, y, .. } | Draw::SpriteSub { x, y, .. } => {
+        Draw::Sprite { x, y, .. } | Draw::Text { x, y, .. } | Draw::TextScaled { x, y, .. } |  Draw::FxQuad { x, y, .. } | Draw::SpriteSub { x, y, .. } => {
             *x += ox;
             *y += oy;
         }
