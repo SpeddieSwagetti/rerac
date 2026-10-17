@@ -914,6 +914,8 @@ pub struct Services {
     /// Port-only weapon leveling: damaging hits on creatures since the engine last took them
     /// (`creature::damage::resolve`; the engine credits the weapon in hand, `Weapons::credit_hit`).
     pub weapon_hits: u32,
+    /// Port-only weapon leveling: the burn / acid effects running on creatures ([`crate::weapon_perks`]).
+    pub weapon_fx: crate::weapon_perks::StatusTable,
     /// The buried bolt caches' globals (0x141390..98, the counter gp−0x5110): `classes::buried_bolts`.
     pub buried: crate::moby_update::classes::buried_bolts::Globals,
     /// The Sonic Summoner's mouse (0x1deb88): `classes::mouse`.
@@ -1016,6 +1018,7 @@ impl Services {
             pickups: Default::default(),
             pickups_banner: Default::default(),
             weapon_hits: 0,
+            weapon_fx: Default::default(),
             buried: Default::default(),
             mouse: Default::default(),
             units: Default::default(),

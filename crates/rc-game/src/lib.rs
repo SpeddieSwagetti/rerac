@@ -46,6 +46,7 @@ pub mod sky_stars;
 pub mod water;
 pub mod hud;
 pub mod weapon_level;
+pub mod weapon_perks;
 pub mod help;
 pub mod map;
 pub mod audio;

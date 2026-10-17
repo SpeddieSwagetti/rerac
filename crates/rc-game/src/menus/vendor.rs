@@ -441,7 +441,15 @@ impl Vendor {
         if discount(gs) { self.tables.shop.discounted(item) } else { self.tables.shop.price(item) }
     }
 
-    fn full(&self, gs: &GameState, item: usize) -> bool { self.tables.shop.max_ammo(item) as i32 <= gs.global.ammo[item] }
+    /// The ammo capacity: the item record's, with the weapon level's bonus (port-only weapon leveling).
+    fn max_ammo(&self, gs: &GameState, item: usize) -> i32 {
+        let base = self.tables.shop.max_ammo(item) as i32;
+        if !crate::weapon_level::enabled() || base == 0 { return base; }
+        let gold = gs.global.gold_weapons.get(item).is_some_and(|&g| g != 0);
+        crate::weapon_perks::max_ammo(base, crate::weapon_level::display_level(gs.weapon_xp.get(item).copied().unwrap_or(0), gold))
+    }
+
+    fn full(&self, gs: &GameState, item: usize) -> bool { self.max_ammo(gs, item) <= gs.global.ammo[item] }
 
     /// 0x1ca4a0[item]: the item's weapon demo scene (None: −1, or no table).
     fn layout_demo(&self, item: usize) -> Option<i32> { self.tables.layout.as_ref()?.demo.get(item).copied().filter(|&s| s >= 0) }
@@ -457,7 +465,7 @@ impl Vendor {
     /// or none.
     pub fn hud_ammo(&self, gs: &GameState) -> Option<(u16, i32, i32)> {
         let e = self.current().filter(|e| e.ammo)?;
-        Some((e.item as u16, gs.global.ammo[e.item], self.tables.shop.max_ammo(e.item) as i32))
+        Some((e.item as u16, gs.global.ammo[e.item], self.max_ammo(gs, e.item)))
     }
 
     /// One frame of `VendorModeUpdate` (0x2b03b8). `rng` is the game's stream (the ticker picks its idle line with
@@ -672,7 +680,7 @@ impl Vendor {
                     if inp.pressed_u & button::RIGHT != 0 || rep(self.held_r) {
                         let unit = self.ammo_unit(e.item);
                         if unit != 0 {
-                            let room = self.tables.shop.max_ammo(e.item) as i32 - gs.global.ammo[e.item];
+                            let room = self.max_ammo(gs, e.item) - gs.global.ammo[e.item];
                             let max = room.min(bolts / unit);
                             if self.qty < max {
                                 self.qty += 1;
@@ -718,7 +726,7 @@ impl Vendor {
     #[allow(clippy::too_many_arguments)]
     fn purchase(&mut self, e: Entry, gs: &mut GameState, items: &ItemTables, session: &mut SessionState, assets: &MenuAssets, rng: &mut Rng, out: &mut VendorOut) -> u8 {
         let bolts = gs.global.bolts;
-        let max = self.tables.shop.max_ammo(e.item) as i32;
+        let max = self.max_ammo(gs, e.item);
         let cost = if e.ammo { self.ammo_unit(e.item) * self.qty } else { self.price(gs, e.item) };
         if bolts < cost && max <= gs.global.ammo[e.item] { return sound::SELECT; }
         let salesman_class = self.tables.classes.salesman.clone();

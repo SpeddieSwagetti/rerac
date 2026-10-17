@@ -161,6 +161,10 @@ pub struct Weapons {
     /// `GameState::weapon_xp` by the engine), the weapon that last used ammo (−1 none), and the levels gained this
     /// tick as (item, new level) for the engine (gold at the maximum, then cleared).
     pub xp: [i32; N],
+    /// The port option "Weapon experience" (mirrored by the engine every tick): off, no experience, bonuses or perks.
+    pub xp_on: bool,
+    /// The fire-rate bonus's carry (`speed_up_fire`).
+    pub fire_accum: f32,
     pub last_fired: i32,
     pub level_ups: Vec<(u8, u8)>,
 }
@@ -171,7 +175,7 @@ impl Default for Weapons {
             ammo: [0; N], uses_ammo: [false; N], used: [0; N], picked: [0; N], glove: Glove::default(), layers: [None; 5], nodes_made: 0, layer_fade: 0, layer_seq: 0,
             arm_item: 0, deferred: None, throws: 0, defs: Vec::new(), gold: [0; N], pyro: Default::default(), pending_draw: false, pending_idle: false,
             aim: None, aim_pos: [0.0; 3], blaster: Default::default(), ryno: Default::default(), devastator: Default::default(), tesla: Default::default(), pending_anim: None, markers: Default::default(), reactive: Default::default(), visibomb: Default::default(),
-            xp: [0; N], last_fired: -1, level_ups: Vec::new(),
+            xp: [0; N], xp_on: true, fire_accum: 0.0, last_fired: -1, level_ups: Vec::new(),
         }
     }
 }
@@ -197,12 +201,45 @@ impl Weapons {
         false
     }
 
+    /// Port-only leveling: the weapon an attack of Ratchet's is credited to: the one in hand (`held`) when it uses
+    /// ammo, else the one that last used ammo.
+    pub fn credited_item(&self, held: i32) -> Option<usize> {
+        let uses = |id: i32| usize::try_from(id).ok().filter(|&i| i < N).filter(|&i| self.uses_ammo[i]);
+        uses(held).or_else(|| uses(self.last_fired))
+    }
+
+    /// Port-only leveling: the fire-rate bonus of the held weapon's level ([`crate::weapon_perks::fire_rate_mult`]),
+    /// called once a tick before the tick: its fire timers run out sooner (an extra tick off every 1 / bonus ticks;
+    /// never the last one: the weapon's own code fires on the tick the timer reaches 0). The weapons with a fire timer:
+    /// the Blaster, the Devastator, the Visibomb, the throw gloves (Bomb 10, Mine 17, Doom 20, Drone 24, Decoy 25), the
+    /// Pyrocitor and the R.Y.N.O.; the others (the Tesla Claw's beam, the Suck Cannon, ...) have none.
+    pub fn speed_up_fire(&mut self, held: i32) {
+        let item = if self.xp_on { usize::try_from(held).ok().filter(|&i| i < N && self.uses_ammo[i]) } else { None };
+        let Some(i) = item else {
+            self.fire_accum = 0.0;
+            return;
+        };
+        let level = crate::weapon_level::display_level(self.xp[i], self.gold[i] != 0);
+        self.fire_accum += crate::weapon_perks::fire_rate_mult(level) - 1.0;
+        if self.fire_accum < 1.0 { return; }
+        self.fire_accum -= 1.0;
+        let dec = |t: &mut i32| { if 1 < *t { *t -= 1; } };
+        match held {
+            15 => dec(&mut self.blaster.fire_timer),
+            11 => dec(&mut self.devastator.fire_timer),
+            13 => dec(&mut self.visibomb.fire_timer),
+            10 | 17 | 20 | 24 | 25 => dec(&mut self.glove.fire_timer),
+            16 => { if 1 < self.pyro.fire_timer { self.pyro.fire_timer -= 1; } }
+            23 => { if 1 < self.ryno.shot_timer { self.ryno.shot_timer -= 1; } }
+            _ => {}
+        }
+    }
+
     /// Port-only leveling: one of Ratchet's attacks damaged an enemy. The experience goes to the weapon in his hand
     /// (`held`, the hand item) when it uses ammo, else to the one that last used ammo (a thrown bomb, a flame that
     /// keeps burning). Gold weapons are at the maximum already; reaching it queues a level-up for the engine.
     pub fn credit_hit(&mut self, held: i32) {
-        let uses = |s: &Self, id: i32| usize::try_from(id).ok().filter(|&i| i < N).filter(|&i| s.uses_ammo[i]);
-        let Some(i) = uses(self, held).or_else(|| uses(self, self.last_fired)) else { return };
+        let Some(i) = self.credited_item(held) else { return };
         if self.gold[i] != 0 { return; }
         let before = crate::weapon_level::level(self.xp[i]);
         self.xp[i] = (self.xp[i] + crate::weapon_level::HIT_XP).min(crate::weapon_level::xp_cap());

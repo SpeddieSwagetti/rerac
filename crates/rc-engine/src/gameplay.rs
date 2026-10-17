@@ -2317,6 +2317,10 @@ fn tick(
         for (d, v) in p.game.hero.weapons.gold.iter_mut().zip(gs.0.global.gold_weapons.iter()) { *d = *v; }
         // The weapon experience (port-only, `rc_game::weapon_level`) in; written back after the tick.
         p.game.hero.weapons.xp = gs.0.weapon_xp;
+        // The port option on / off, and the held weapon's fire-rate bonus (crate::weapon_perks).
+        p.game.hero.weapons.xp_on = crate::weapon_xp_setting::enabled();
+        let held_now = p.game.hero.items.slot.id;
+        p.game.hero.weapons.speed_up_fire(held_now);
         {
             // The moby side's view of the same table: the item offers and the hit resolver (`Counters::gold_weapons`), the
             // gold Suck Cannon 0x13e529 (item 9: ten slots) and the gold Morph-o-Ray 0x13e535 (item 21: the gold chickens).
@@ -2584,7 +2588,14 @@ fn tick(
     if let Some(hw) = held.as_mut() {
         let id = p.game.hero.items.slot.id;
         let w = ammo.as_ref().and_then(|a| a.0.get(id.max(0) as usize).copied()).filter(|&(has, _)| has && id > 0 && p.game.hero.mode == 0)
-            .map(|(_, max)| (id as u16, state.as_ref().and_then(|s| s.0.global.ammo.get(id as usize).copied()).unwrap_or(0), max as i32));
+            .map(|(_, max)| {
+                // Port-only weapon leveling: the level's ammo capacity bonus (rc_game::weapon_perks::max_ammo).
+                let wp = &p.game.hero.weapons;
+                let max = if wp.xp_on && (id as usize) < wp.xp.len() {
+                    rc_game::weapon_perks::max_ammo(max as i32, rc_game::weapon_level::display_level(wp.xp[id as usize], wp.gold[id as usize] != 0))
+                } else { max as i32 };
+                (id as u16, state.as_ref().and_then(|s| s.0.global.ammo.get(id as usize).copied()).unwrap_or(0), max)
+            });
         if hw.0 != w { hw.0 = w; }
     }
 }

@@ -21,6 +21,7 @@ fn flag() -> &'static AtomicBool {
             (true, "default")
         };
         println!("weapon experience: {} ({source})", if on { "on" } else { "off" });
+        rc_game::weapon_level::set_enabled(on);
         AtomicBool::new(on)
     })
 }
@@ -31,5 +32,6 @@ pub fn enabled() -> bool { flag().load(Ordering::Relaxed) }
 /// Sets it (the Port Options row) and writes it into the port settings file.
 pub fn set_and_save(on: bool) {
     flag().store(on, Ordering::Relaxed);
+    rc_game::weapon_level::set_enabled(on);
     crate::render_settings::save_key("weapon_xp", if on { "on" } else { "off" });
 }
