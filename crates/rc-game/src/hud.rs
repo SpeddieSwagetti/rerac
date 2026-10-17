@@ -154,7 +154,9 @@ const LEVEL_LABEL_GAP: i32 = 4;
 /// `RC_LEVEL_PILL_MARGIN`, `RC_LEVEL_PILL_H`, `RC_LEVEL_LABEL_SCALE`, `RC_LEVEL_METER_H`, `RC_LEVEL_ROW_GAP`,
 /// `RC_LEVEL_METER_DY`, `RC_LEVEL_PAD` (the capsule's inner padding, left of the meter and right of the label),
 /// `RC_LEVEL_LABEL_GAP`, `RC_LEVEL_LEFT_DX` / `RC_LEVEL_RIGHT_DX` (shift the capsule's left / right end) and
-/// `RC_LEVEL_ICON_W` (the weapon icon's width the left end is measured from; 0: the item's own frame).
+/// `RC_LEVEL_ICON_W` (the weapon icon's width the left end is measured from; 0: the item's own frame) and
+/// `RC_LEVEL_LEFT_MID=1` (the left end halfway between the icon and the ammo count, not at the ammo capsule's) and
+/// `RC_LEVEL_METER_DX` (shifts the meter's right end, and with it the label and the capsule's right end).
 #[derive(Debug)]
 struct LevelLayout {
     cap_margin: i32,
@@ -168,6 +170,8 @@ struct LevelLayout {
     left_dx: i32,
     right_dx: i32,
     icon_w: i32,
+    left_mid: bool,
+    meter_dx: i32,
 }
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T { std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default) }
@@ -188,6 +192,8 @@ fn level_layout() -> &'static LevelLayout {
             left_dx: env_or("RC_LEVEL_LEFT_DX", 0),
             right_dx: env_or("RC_LEVEL_RIGHT_DX", 0),
             icon_w: env_or("RC_LEVEL_ICON_W", 0),
+            left_mid: env_or("RC_LEVEL_LEFT_MID", 0) != 0,
+            meter_dx: env_or("RC_LEVEL_METER_DX", 0),
         };
         if std::env::vars().any(|(k, _)| k.starts_with("RC_LEVEL_")) { eprintln!("weapon level HUD layout: {l:?}"); }
         l
@@ -1639,34 +1645,35 @@ impl HudState {
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
         let lay = level_layout();
         let (ph, py0) = (lay.pill_h, y + 31 + lay.row_gap);
-        // The level row is the same for every weapon (the same size and place whatever the ammo capacity): its visible
-        // ends are measured on the standard ammo capsule (`WEAPON_LEN[0]`, a count of at most "99/99"), not on the
-        // weapon's own, which is longer above 99 rounds. The left end is halfway between the weapon icon and the
-        // ammo count, the right one at the standard capsule's. A cap sprite is `cap_margin` / 32 transparent on its outer side (the capsule's round end is its
-        // inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
-        // `cap_margin` inside their sprites, and this capsule's smaller caps are placed to end at the same visible
-        // edges.
+        // The level row is the same for every weapon (the same size and place whatever the ammo capacity), measured on
+        // the standard ammo capsule (`WEAPON_LEN[0]`, a count of at most "99/99") and not on the weapon's own, which is
+        // longer above 99 rounds. Left to right: the capsule's left end (the ammo capsule's own, `RC_LEVEL_LEFT_MID`:
+        // halfway between the icon and the count), one padding, the meter up to the middle of the gap between the
+        // weapon icon and the ammo count, the label (left aligned, the capsule sized for "V10"), one padding, the
+        // capsule's right end. A cap sprite is `cap_margin` / 32 transparent on its outer side (the capsule's round
+        // end is its inner part), so the 32-wide caps of the ammo capsule (the left one at x − 0x1c) end `cap_margin`
+        // inside their sprites, and this capsule's smaller caps are placed to end at the same visible edges.
         let margin = ph * lay.cap_margin / 32;
         let icon_w = if 0 < lay.icon_w { lay.icon_w } else { self.assets.size(self.assets.icon_frame(s.icon, 3)).0 };
         let icon_right = x + s.offset.0 + icon_w;
-        let (len0, lw0) = (WEAPON_LEN[0], (WEAPON_LEN[0] as f32 * sf) as i32);
-        let ammo_left = x + WEAPON_TEXT_D.0 + len0 - self.assets.text_width(Font::Regular, b"99/99");
-        let left_edge = (icon_right + ammo_left) / 2 + lay.left_dx;
-        let right_edge = x + 4 + x0 + lw0 + 32 - lay.cap_margin + lay.right_dx;
+        let ammo_left = x + WEAPON_TEXT_D.0 + WEAPON_LEN[0] - self.assets.text_width(Font::Regular, b"99/99");
+        let gap_mid = (icon_right + ammo_left) / 2;
+        let left_edge = (if lay.left_mid { gap_mid } else { x - 0x1c + lay.cap_margin }) + lay.left_dx;
+        let (mx0, mx1) = (left_edge + lay.pad, (gap_mid + lay.meter_dx).max(left_edge + lay.pad + 6));
+        let label_w = self.assets.text_width_scaled(Font::Regular, &label, lay.label_scale);
+        let label_x = mx1 + lay.label_gap;
+        let label_ref_w = self.assets.text_width_scaled(Font::Regular, b"V10", lay.label_scale);
+        // let right_edge = label_x + label_ref_w + lay.pad + lay.right_dx;
+        let right_edge = label_x  + label_w + lay.pad + lay.right_dx;
         let lx = left_edge - margin;
         let rcx = (right_edge - ph + margin).max(lx + ph);
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(mid, lx + ph, py0, rcx - lx - ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(cap, rcx, py0, ph, ph, bar_a, Rot::R180));
-        // The label ends one padding inside the capsule's right end, the meter starts one padding inside its left end
-        // and runs up to the label.
-        let label_w = self.assets.text_width_scaled(Font::Regular, &label, lay.label_scale);
-        let label_x = right_edge - lay.pad;
         let label_y = py0 + (ph - 16 * lay.label_scale as i32 / 100) / 2 - 1;
-        self.text_right_scaled(Font::Regular, label_x + 1, label_y + 1, shadow, &label, lay.label_scale, out);
-        self.text_right_scaled(Font::Regular, label_x, label_y, colour, &label, lay.label_scale, out);
-        let (mx0, my) = (left_edge + lay.pad, py0 + (ph - lay.meter_h) / 2 + lay.meter_dy);
-        let mx1 = (label_x - label_w - lay.label_gap).max(mx0 + 6);
+        self.text_right_scaled(Font::Regular, label_x + label_w + 1, label_y + 1, shadow, &label, lay.label_scale, out);
+        self.text_right_scaled(Font::Regular, label_x + label_w, label_y, colour, &label, lay.label_scale, out);
+        let my = py0 + (ph - lay.meter_h) / 2 + lay.meter_dy;
         push_xp_meter(mx0, my, mx1, lay.meter_h, a, cur, need, gold, out);
     }
 
