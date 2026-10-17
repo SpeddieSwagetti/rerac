@@ -134,8 +134,9 @@ const WEAPON_LEN: [i32; 2] = [70, 95];
 const EMPTY_FROM: u32 = 0x0020_2080;
 const EMPTY_TO: u32 = 0x8020_2080;
 const WEAPON_TEXT_D: (i32, i32) = (25, 8);
-//// left margin for pill capsule.
-const PILL_CAP_MARGIN: i32 = 16;
+/// Port-only (weapon leveling): the transparent outer part of a 32-wide capsule cap sprite, in pixels (tune it if the
+/// level capsule's ends do not line up with the ammo capsule's).
+const PILL_CAP_MARGIN: i32 = 20;
 /// Port-only (weapon leveling): the level capsule's height, the level label's scale (percent of the regular font) and
 /// the experience meter's height, in pixels. The label and the meter are centred in the capsule.
 const LEVEL_PILL_H: i32 = 20;
@@ -145,6 +146,51 @@ const LEVEL_METER_H: i32 = 8;
 /// meter's nudge down in the capsule (the capsule's round sprite sits lower than its box, so the exact centre looks high).
 const LEVEL_ROW_GAP: i32 = 1;
 const LEVEL_METER_DY: i32 = 1;
+/// Port-only (weapon leveling): the gap between the meter and the label.
+const LEVEL_LABEL_GAP: i32 = 4;
+
+/// Port-only (weapon leveling): the level row's layout, the constants above (and the capsule's padding, default half
+/// its height) with overrides from the environment, read once, to tune it without rebuilding:
+/// `RC_LEVEL_PILL_MARGIN`, `RC_LEVEL_PILL_H`, `RC_LEVEL_LABEL_SCALE`, `RC_LEVEL_METER_H`, `RC_LEVEL_ROW_GAP`,
+/// `RC_LEVEL_METER_DY`, `RC_LEVEL_PAD` (the capsule's inner padding, left of the meter and right of the label),
+/// `RC_LEVEL_LABEL_GAP`, and `RC_LEVEL_LEFT_DX` / `RC_LEVEL_RIGHT_DX` (shift the capsule's left / right end).
+#[derive(Debug)]
+struct LevelLayout {
+    cap_margin: i32,
+    pill_h: i32,
+    label_scale: u16,
+    meter_h: i32,
+    row_gap: i32,
+    meter_dy: i32,
+    pad: i32,
+    label_gap: i32,
+    left_dx: i32,
+    right_dx: i32,
+}
+
+fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T { std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default) }
+
+fn level_layout() -> &'static LevelLayout {
+    static LAYOUT: std::sync::OnceLock<LevelLayout> = std::sync::OnceLock::new();
+    LAYOUT.get_or_init(|| {
+        let pill_h = env_or("RC_LEVEL_PILL_H", LEVEL_PILL_H).clamp(8, 40);
+        let l = LevelLayout {
+            cap_margin: env_or("RC_LEVEL_PILL_MARGIN", PILL_CAP_MARGIN).clamp(0, 32),
+            pill_h,
+            label_scale: env_or("RC_LEVEL_LABEL_SCALE", LEVEL_LABEL_SCALE).clamp(20, 200),
+            meter_h: env_or("RC_LEVEL_METER_H", LEVEL_METER_H).clamp(6, 20),
+            row_gap: env_or("RC_LEVEL_ROW_GAP", LEVEL_ROW_GAP),
+            meter_dy: env_or("RC_LEVEL_METER_DY", LEVEL_METER_DY),
+            pad: env_or("RC_LEVEL_PAD", pill_h / 2),
+            label_gap: env_or("RC_LEVEL_LABEL_GAP", LEVEL_LABEL_GAP),
+            left_dx: env_or("RC_LEVEL_LEFT_DX", 0),
+            right_dx: env_or("RC_LEVEL_RIGHT_DX", 0),
+        };
+        if std::env::vars().any(|(k, _)| k.starts_with("RC_LEVEL_")) { eprintln!("weapon level HUD layout: {l:?}"); }
+        l
+    })
+}
+
 /// Element y on NTSC (the code picks 10 on PAL).
 const ELEMENT_Y: i32 = 18;
 
@@ -1588,36 +1634,35 @@ impl HudState {
         let gold = self.inputs.gold.get(item).is_some_and(|&g| g != 0);
         let (cur, need) = crate::weapon_level::progress(xp, gold);
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
-        let (ph, py0) = (LEVEL_PILL_H, y + 31 + LEVEL_ROW_GAP);
+        let lay = level_layout();
+        let (ph, py0) = (lay.pill_h, y + 31 + lay.row_gap);
         // The capsule's visible ends: the left one halfway between the weapon icon and the ammo count (measured on the
         // widest count, "max/max", so the capsule does not move as the ammo changes), the right one at the ammo
-        // capsule's. A cap sprite is `PILL_CAP_MARGIN` / 32 transparent on its outer side (the capsule's round end is
-        // its inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
-        // `PILL_CAP_MARGIN` inside their sprites, and this capsule's smaller caps are placed to end at the same
-        // visible edges.
-        let margin = ph * PILL_CAP_MARGIN / 32;
+        // capsule's. A cap sprite is `cap_margin` / 32 transparent on its outer side (the capsule's round end is its
+        // inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
+        // `cap_margin` inside their sprites, and this capsule's smaller caps are placed to end at the same visible
+        // edges.
+        let margin = ph * lay.cap_margin / 32;
         let icon_w = self.assets.size(self.assets.icon_frame(s.icon, 3)).0;
         let icon_right = x + s.offset.0 + icon_w;
         let ammo_left = tx - self.assets.text_width(Font::Regular, format!("{}/{}", s.max, s.max).as_bytes());
-        let left_edge = (icon_right + ammo_left) / 2;
-        let right_edge = x + 4 + x0 + lw + 32 - PILL_CAP_MARGIN;
+        let left_edge = (icon_right + ammo_left) / 2 + lay.left_dx;
+        let right_edge = x + 4 + x0 + lw + 32 - lay.cap_margin + lay.right_dx;
         let lx = left_edge - margin;
         let rcx = (right_edge - ph + margin).max(lx + ph);
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(mid, lx + ph, py0, rcx - lx - ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(cap, rcx, py0, ph, ph, bar_a, Rot::R180));
-        let label_w = self.assets.text_width_scaled(Font::Regular, &label, LEVEL_LABEL_SCALE);
-        let label_y = py0 + (ph - 16 * LEVEL_LABEL_SCALE as i32 / 100) / 2 - 1;
-        // self.text_right_in(Font::Regular, tx + 1, py0 + 6, shadow, &label, out);
-        // self.text_right_in(Font::Regular, tx, py0 + 5, colour, &label, out);
-        self.text_right_scaled(Font::Regular, tx + 1, label_y + 1, shadow, &label, LEVEL_LABEL_SCALE, out);
-        self.text_right_scaled(Font::Regular, tx, label_y, colour, &label, LEVEL_LABEL_SCALE, out);
-        // self.text_right(tx + 1, y + 32, shadow, &label, out);
-        // self.text_right(tx, y + 31, colour, &label, out);
-        // The meter keeps the capsule's padding on the left (the round end's radius).
-        let (mx0, my) = (left_edge + ph / 2, py0 + (ph - LEVEL_METER_H) / 2 + LEVEL_METER_DY);
-        let mx1 = (tx - label_w - 6).max(mx0 + 6);
-        push_xp_meter(mx0, my, mx1, LEVEL_METER_H, a, cur, need, gold, out);
+        // The label ends one padding inside the capsule's right end, the meter starts one padding inside its left end
+        // and runs up to the label.
+        let label_w = self.assets.text_width_scaled(Font::Regular, &label, lay.label_scale);
+        let label_x = right_edge - lay.pad;
+        let label_y = py0 + (ph - 16 * lay.label_scale as i32 / 100) / 2 - 1;
+        self.text_right_scaled(Font::Regular, label_x + 1, label_y + 1, shadow, &label, lay.label_scale, out);
+        self.text_right_scaled(Font::Regular, label_x, label_y, colour, &label, lay.label_scale, out);
+        let (mx0, my) = (left_edge + lay.pad, py0 + (ph - lay.meter_h) / 2 + lay.meter_dy);
+        let mx1 = (label_x - label_w - lay.label_gap).max(mx0 + 6);
+        push_xp_meter(mx0, my, mx1, lay.meter_h, a, cur, need, gold, out);
     }
 
     /// The banner part of 0x24fb50 (ramp ±0x80/ScaleTicks(8) per tick) and its draw 0x251b88. Not drawn (and not
