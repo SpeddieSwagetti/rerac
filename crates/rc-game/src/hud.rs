@@ -1590,16 +1590,19 @@ impl HudState {
         let (cur, need) = crate::weapon_level::progress(xp, gold);
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
         let (ph, py0) = (LEVEL_PILL_H, y + 31 + LEVEL_ROW_GAP);
-        // The capsule's visible ends: the left one at the centre of the weapon icon, the right one at the ammo
+        // The capsule's visible ends: the left one halfway between the weapon icon and the ammo count (measured on the
+        // widest count, "max/max", so the capsule does not move as the ammo changes), the right one at the ammo
         // capsule's. A cap sprite is `PILL_CAP_MARGIN` / 32 transparent on its outer side (the capsule's round end is
         // its inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
         // `PILL_CAP_MARGIN` inside their sprites, and this capsule's smaller caps are placed to end at the same
         // visible edges.
         let margin = ph * PILL_CAP_MARGIN / 32;
         let icon_w = self.assets.size(self.assets.icon_frame(s.icon, 3)).0;
-        let icon_centre = x + s.offset.0 + (icon_w >> 1);
+        let icon_right = x + s.offset.0 + icon_w;
+        let ammo_left = tx - self.assets.text_width(Font::Regular, format!("{}/{}", s.max, s.max).as_bytes());
+        let left_edge = (icon_right + ammo_left) / 2;
         let right_edge = x + 4 + x0 + lw + 32 - PILL_CAP_MARGIN;
-        let lx = icon_centre - margin;
+        let lx = left_edge - margin;
         let rcx = (right_edge - ph + margin).max(lx + ph);
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(mid, lx + ph, py0, rcx - lx - ph, ph, bar_a, Rot::None));
@@ -1612,7 +1615,8 @@ impl HudState {
         self.text_right_scaled(Font::Regular, tx, label_y, colour, &label, LEVEL_LABEL_SCALE, out);
         // self.text_right(tx + 1, y + 32, shadow, &label, out);
         // self.text_right(tx, y + 31, colour, &label, out);
-        let (mx0, my) = (icon_centre + ph / 2 - 2, py0 + (ph - LEVEL_METER_H) / 2 + LEVEL_METER_DY);
+        // The meter keeps the capsule's padding on the left (the round end's radius).
+        let (mx0, my) = (left_edge + ph / 2, py0 + (ph - LEVEL_METER_H) / 2 + LEVEL_METER_DY);
         let mx1 = (tx - label_w - 6).max(mx0 + 6);
         push_xp_meter(mx0, my, mx1, LEVEL_METER_H, a, cur, need, gold, out);
     }
