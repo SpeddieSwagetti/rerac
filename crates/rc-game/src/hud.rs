@@ -198,6 +198,11 @@ impl HudAssets {
 
     /// `FUN_0021cc90`-style width of `text` (to the NUL) in `font`.
     pub fn text_width(&self, font: Font, text: &[u8]) -> i32 { measure_text_width(text, -1, self.glyphs(font)) }
+    
+    /// Measure text width at a relative font scale (100 = 1.0x).
+    pub fn text_width_scaled(&self, font: Font, text: &[u8], scale_percent: u16) -> i32 {
+        (self.text_width(font, text) * scale_percent as i32 + 50) / 100
+    }
 }
 
 /// Which `HudSprite` variant.
@@ -1344,6 +1349,28 @@ impl HudState {
         out.push(Draw::Text { font: Font::Regular, x: x - w, y, rgba, text: text.to_vec() });
     }
 
+    fn text_right_scaled(
+    &self,
+    font: Font,
+    x: i32,
+    y: i32,
+    rgba: u32,
+    text: &[u8],
+    scale_percent: u16,
+    out: &mut Vec<Draw>,
+    ) {
+        let width = self.assets.text_width_scaled(font, text, scale_percent);
+
+        out.push(Draw::TextScaled {
+            font,
+            x: x - width,
+            y,
+            rgba,
+            text: text.to_vec(),
+            scale_percent,
+        });
+    }
+
     /// 0x24e418 (nothing as Giant Clank, body 2, or while Ratchet is mounted, state 0x32; as Clank, body 1, the orbs of
     /// Clank's 0x1415fc).
     fn draw_health(&self, i: usize, out: &mut Vec<Draw>) {
@@ -1528,6 +1555,7 @@ impl HudState {
         let (tx, ty) = (x + WEAPON_TEXT_D.0 + len, y + WEAPON_TEXT_D.1);
         self.text_right(tx + 1, ty + 1, shadow, &text, out);
         self.text_right(tx, ty, colour, &text, out);
+        
         // Port-only weapon leveling (after Ratchet & Clank 2's weapon HUD): a second, smaller capsule under the ammo's,
         // the experience meter in the pause menu's slider style (grey frame, black well, glossy fill; orange, a
         // brighter gold on gold weapons) and the level "V#" in the small font.
@@ -1541,9 +1569,13 @@ impl HudState {
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(mid, lx + ph, py0, (rx - lx - 2 * ph).max(0), ph, bar_a, Rot::None));
         out.push(Self::sprite(cap, rx - ph, py0, ph, ph, bar_a, Rot::R180));
-        let label_w = self.assets.text_width(Font::Small, &label);
-        self.text_right_in(Font::Small, tx + 1, py0 + 6, shadow, &label, out);
-        self.text_right_in(Font::Small, tx, py0 + 5, colour, &label, out);
+        let label_w = self.assets.text_width_scaled(Font::Regular, &label, 75);
+        // self.text_right_in(Font::Regular, tx + 1, py0 + 6, shadow, &label, out);
+        // self.text_right_in(Font::Regular, tx, py0 + 5, colour, &label, out);
+        self.text_right_scaled(Font::Regular, tx + 1, py0 + 6, shadow, &label, 75, out);
+        self.text_right_scaled(Font::Regular, tx, py0 + 5, colour, &label,75, out);
+        // self.text_right(tx + 1, y + 32, shadow, &label, out);
+        // self.text_right(tx, y + 31, colour, &label, out);
         let (mx0, my) = (x + 2, py0 + 7);
         let mx1 = (tx - label_w - 6).max(mx0 + 6);
         push_xp_meter(mx0, my, mx1, a, cur, need, gold, out);
