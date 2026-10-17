@@ -140,7 +140,7 @@ const PILL_CAP_MARGIN: i32 = 20;
 /// Port-only (weapon leveling): the level capsule's height, the level label's scale (percent of the regular font) and
 /// the experience meter's height, in pixels. The label and the meter are centred in the capsule.
 const LEVEL_PILL_H: i32 = 20;
-const LEVEL_LABEL_SCALE: u16 = 60;
+const LEVEL_LABEL_SCALE: u16 = 55;
 const LEVEL_METER_H: i32 = 8;
 /// Port-only (weapon leveling): the level row's gap below the ammo capsule (the whole row moves with it), and the
 /// meter's nudge down in the capsule (the capsule's round sprite sits lower than its box, so the exact centre looks high).
