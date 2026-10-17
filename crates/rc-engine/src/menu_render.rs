@@ -642,7 +642,7 @@ fn menu_frame(
                         println!("menus: frame {frame}: quick select closed, selection {} → hand request {:?} (0x141408 = {}; the hand swap FUN_002307e0 runs in hero/items.rs)", qs.sel, u.request, sess.temp_hand);
                     }
                 }
-                qs.draw(&rt.assets, &gs.global, &gs.weapon_xp, play.game.counter, listeners, &mut rt.draws);
+                qs.draw(&rt.assets, &gs.global, crate::weapon_xp_setting::enabled().then_some(&gs.weapon_xp), play.game.counter, listeners, &mut rt.draws);
             }
             // 0x2abfb0: once the map page has found the level's map (0x184694), move record 9 ("the map was used")
             // is bumped every mode-0 frame (the Novalis director's map hint waits for it).
@@ -724,6 +724,7 @@ fn menu_frame(
                 post_fade_step(rt, &mut mm, &mut play, gs, sess.hp, audio.as_deref_mut(), frame, true);
             } else if let Some(menu) = rt.menu.as_mut() {
                 if let Some(s) = shadows.as_deref() { menu.set_port_value(Setting::Shadows, !s.enabled as u8); }
+                menu.set_port_value(Setting::WeaponXp, !crate::weapon_xp_setting::enabled() as u8);
                 menu.set_port_value(Setting::Resolution, display.resolution.index());
                 menu.set_port_value(Setting::Aspect, display.aspect.index());
                 menu.set_port_value(Setting::Fullscreen, display.fullscreen as u8);
@@ -740,6 +741,12 @@ fn menu_frame(
                         s.enabled = v == 0;
                         println!("menus: frame {frame}: Port Options: shadows {}", if s.enabled { "on" } else { "off" });
                         s.save();
+                    }
+                }
+                if let Some(v) = menu.port_value(Setting::WeaponXp) {
+                    if crate::weapon_xp_setting::enabled() != (v == 0) {
+                        println!("menus: frame {frame}: Port Options: weapon experience {}", if v == 0 { "on" } else { "off" });
+                        crate::weapon_xp_setting::set_and_save(v == 0);
                     }
                 }
                 read_graphics_rows(menu, &mut gfx, &gfx_before, frame);

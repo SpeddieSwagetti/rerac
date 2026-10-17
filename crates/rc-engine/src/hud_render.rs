@@ -855,6 +855,7 @@ fn tick_and_build(
             rt.game.ammo = gs.0.global.ammo;
             // Port-only weapon leveling: the experience and the gold flags (the HUD's meter, level and popups).
             rt.game.weapon_xp = gs.0.weapon_xp;
+            rt.game.weapon_xp_on = crate::weapon_xp_setting::enabled();
             rt.game.gold = std::array::from_fn(|i| gs.0.global.gold_weapons[i]);
         }
         if let Some(s) = &session { rt.game.hp = s.0.hp; }
