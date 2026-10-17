@@ -1335,7 +1335,9 @@ impl HudState {
             self.levels_seen = false;
             return;
         }
-        let now: [u8; 37] = std::array::from_fn(|i| crate::weapon_level::display_level(inp.weapon_xp[i], inp.gold[i] != 0));
+        // From the experience alone: a gold flag that appears (a save loaded, a vendor purchase) is not announced, and a
+        // load that resets the experience just lowers the recorded levels.
+        let now: [u8; 37] = std::array::from_fn(|i| crate::weapon_level::level(inp.weapon_xp[i]));
         if self.levels_seen {
             if let Some(i) = (0..37).find(|&i| now[i] > self.seen_levels[i]) {
                 let text = crate::weapon_level::popup_text(i, now[i]);
@@ -1663,8 +1665,7 @@ impl HudState {
         let label_w = self.assets.text_width_scaled(Font::Regular, &label, lay.label_scale);
         let label_x = mx1 + lay.label_gap;
         let label_ref_w = self.assets.text_width_scaled(Font::Regular, b"V10", lay.label_scale);
-        // let right_edge = label_x + label_ref_w + lay.pad + lay.right_dx;
-        let right_edge = label_x  + label_w + lay.pad + lay.right_dx;
+        let right_edge = label_x + label_ref_w + lay.pad + lay.right_dx;
         let lx = left_edge - margin;
         let rcx = (right_edge - ph + margin).max(lx + ph);
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));

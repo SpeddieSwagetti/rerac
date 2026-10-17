@@ -418,6 +418,9 @@ impl GameState {
     /// equals the word after the terminator in its buffer; that stale word is not modelled.)
     pub fn restore_section(&mut self, scope: Scope, sec: &Section) -> u32 {
         if !sec.crc_ok { return 1; }
+        // Port-only weapon leveling: the experience is not on the card, so restoring a save (the global section is
+        // read first, by the memory card as by `load_card_file`) starts every weapon at V1; gold ones show V10.
+        if matches!(scope, Scope::Global) { self.weapon_xp = [0; 37]; }
         let descs = self.descs(scope).to_vec();
         let mut status = vec![0i32; descs.len()];
         let (mut errors, mut sum) = (0u32, 8usize);
