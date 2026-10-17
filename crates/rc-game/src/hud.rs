@@ -142,14 +142,18 @@ const PILL_CAP_MARGIN: i32 = 16;
 const LEVEL_PILL_H: i32 = 16;
 const LEVEL_LABEL_SCALE: u16 = 55;
 const LEVEL_METER_H: i32 = 7;
+/// Port-only (weapon leveling): the level row's gap below the ammo capsule (the whole row moves with it), and the
+/// meter's nudge down in the capsule (the capsule's round sprite sits lower than its box, so the exact centre looks high).
+const LEVEL_ROW_GAP: i32 = 4;
+const LEVEL_METER_DY: i32 = 1;
 /// Element y on NTSC (the code picks 10 on PAL).
 const ELEMENT_Y: i32 = 18;
 
 /// Port-only weapon leveling: the experience meter in the pause menu slider's style (a grey frame, a black well, a
 /// glossy fill: dark top line, main band, shine line; orange, a brighter gold on gold weapons), `h` pixels tall (10
 /// is the ring's; at least 6) from (`mx0`, `my`) to `mx1`, filled `cur / need`, at `a` (0..128, the element's alpha).
-/// The fill takes the upper five eighths of the well (at least three rows). Used by the weapon element and the quick
-/// select ring's centre.
+/// The fill takes the upper nine tenths of the well (at least three rows, and the well keeps one black row below it).
+/// Used by the weapon element and the quick select ring's centre.
 pub fn push_xp_meter(mx0: i32, my: i32, mx1: i32, h: i32, a: i32, cur: i32, need: i32, gold: bool, out: &mut Vec<Draw>) {
     // `fun_00200e08(…, 0)`'s whole-pixel corners (one pixel up and left of a sprite corner), as the boss meter.
     let px = |v: i32| v * 16 - 8;
@@ -161,10 +165,11 @@ pub fn push_xp_meter(mx0: i32, my: i32, mx1: i32, h: i32, a: i32, cur: i32, need
     let fill = (mx1 - mx0 - 2) * cur / need.max(1);
     if 0 < fill {
         let (dark, main, shine) = if gold { (0x009c_5943, TEXT_FROM, 0x00ff_a67c) } else { (TEXT_FROM, 0x00ff_a67c, 0x00ff_c49e) };
-        let band = ((h - 2) * 5 / 8).max(3);
+        // The fill's rows: the dark top line, the main band, the shine line (rows 1..=band of the frame).
+        let band = ((h - 2) * 9 / 10).max(3).min(h - 3);
         rect(mx0 + 1, my + 1, mx0 + 1 + fill, my + 2, dark);
-        rect(mx0 + 1, my + 2, mx0 + 1 + fill, my + band - 1, main);
-        rect(mx0 + 1, my + band - 1, mx0 + 1 + fill, my + band, shine);
+        rect(mx0 + 1, my + 2, mx0 + 1 + fill, my + band, main);
+        rect(mx0 + 1, my + band, mx0 + 1 + fill, my + band + 1, shine);
     }
 }
 
@@ -1584,7 +1589,7 @@ impl HudState {
         let gold = self.inputs.gold.get(item).is_some_and(|&g| g != 0);
         let (cur, need) = crate::weapon_level::progress(xp, gold);
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
-        let (ph, py0) = (LEVEL_PILL_H, y + 31);
+        let (ph, py0) = (LEVEL_PILL_H, y + 31 + LEVEL_ROW_GAP);
         // The capsule's visible ends: the left one at the centre of the weapon icon, the right one at the ammo
         // capsule's. A cap sprite is `PILL_CAP_MARGIN` / 32 transparent on its outer side (the capsule's round end is
         // its inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
@@ -1607,7 +1612,7 @@ impl HudState {
         self.text_right_scaled(Font::Regular, tx, label_y, colour, &label, LEVEL_LABEL_SCALE, out);
         // self.text_right(tx + 1, y + 32, shadow, &label, out);
         // self.text_right(tx, y + 31, colour, &label, out);
-        let (mx0, my) = (icon_centre + ph / 2 - 2, py0 + (ph - LEVEL_METER_H) / 2);
+        let (mx0, my) = (icon_centre + ph / 2 - 2, py0 + (ph - LEVEL_METER_H) / 2 + LEVEL_METER_DY);
         let mx1 = (tx - label_w - 6).max(mx0 + 6);
         push_xp_meter(mx0, my, mx1, LEVEL_METER_H, a, cur, need, gold, out);
     }
