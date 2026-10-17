@@ -621,8 +621,9 @@ impl QuickSelect {
         (px, py)
     }
 
-    /// `QuickSelectDraw` 0x24d938. `tick` = the game tick 0x15f5cc (cursor pulse).
-    pub fn draw(&self, a: &MenuAssets, g: &Global, tick: u64, listeners: i32, out: &mut Vec<MenuDraw>) {
+    /// `QuickSelectDraw` 0x24d938. `tick` = the game tick 0x15f5cc (cursor pulse). `xp` (port-only weapon leveling,
+    /// `GameState::weapon_xp`): the centre of a weapon with ammo shows its level and experience meter.
+    pub fn draw(&self, a: &MenuAssets, g: &Global, xp: &[i32; 37], tick: u64, listeners: i32, out: &mut Vec<MenuDraw>) {
         if !self.open { return; }
         if self.command_page {
             self.draw_commands(a, tick, listeners, out);
@@ -668,8 +669,8 @@ impl QuickSelect {
         let shadow = tween(sf, c.shadow_rgba.0, c.shadow_rgba.1);
         let (cx, cy) = (x0 + c.centre.0, y0 + c.centre.1);
         let centre = |out: &mut Vec<MenuDraw>, x: i32, y: i32, rgba: u32, t: &[u8]| {
-            let wd = a.width(Font::Regular, t);
-            text(out, Font::Regular, x - (wd >> 1), y, rgba, t);
+            let wd = a.width(Font::Small, t);
+            text(out, Font::Small, x - (wd >> 1), y, rgba, t);
         };
         let slot_item = g.quick_select[si];
         let has_ammo = self.items.ammo_of(slot_item);
@@ -678,8 +679,23 @@ impl QuickSelect {
             let s_txt = format_ammo(&c.ammo_format, ammo, max as i32);
             let (from, to) = if ammo != 0 { c.ammo_rgba } else { c.ammo_empty_rgba };
             let col = tween(sf, from, to);
-            centre(out, cx + 1, cy + 13, shadow, &s_txt);
-            centre(out, cx, cy + 12, col, &s_txt);
+            // The ammo sits lower than the game's (cy + 12) to make room for the level and the meter.
+            centre(out, cx + 1, cy + 25, shadow, &s_txt);
+            centre(out, cx, cy + 24, col, &s_txt);
+            // Port-only weapon leveling: "V#" (small font) above the name, the experience meter between the name and
+            // the ammo, in the weapon HUD's style.
+            let k = usize::try_from(slot_item).unwrap_or(0);
+            let wxp = xp.get(k).copied().unwrap_or(0);
+            let wgold = g.gold_weapons.get(k).is_some_and(|&b| b != 0);
+            let (cur, need) = crate::weapon_level::progress(wxp, wgold);
+            let label = format!("V{}", crate::weapon_level::display_level(wxp, wgold)).into_bytes();
+            let lw = a.width(Font::Small, &label);
+            let ncol = tween(sf, c.name_rgba.0, c.name_rgba.1);
+            text(out, Font::Small, cx - (lw >> 1) + 1, cy - 41, shadow, &label);
+            text(out, Font::Small, cx - (lw >> 1), cy - 42, ncol, &label);
+            let mut meter = Vec::new();
+            crate::hud::push_xp_meter(cx - 36, cy + 10, cx + 36, (sf * 128.0) as i32, cur, need, wgold, &mut meter);
+            out.extend(meter.into_iter().map(MenuDraw::Hud));
         }
         let col = tween(sf, c.name_rgba.0, c.name_rgba.1);
         let item = e.item;
@@ -1022,7 +1038,7 @@ mod tests {
         let mut g = global([10, 11, 12, 13, 14, 15, 16, 17]);
         g.ammo[10] = 12;
         let mut out = vec![];
-        q.draw(&a, &g, 0, 0, &mut out);
+        q.draw(&a, &g, &[0; 37], 0, 0, &mut out);
         let sprites: Vec<_> = out.iter().filter_map(|d| match d { MenuDraw::Hud(crate::hud::Draw::Sprite { x, y, w, h, alpha, .. }) => Some((*x, *y, *w, *h, *alpha)), _ => None }).collect();
         assert_eq!(&sprites[..4], &[(20, 108, 105, 100, 128), (230, 308, -105, -100, 128), (230, 108, -105, 100, 128), (20, 308, 105, -100, 128)]);
         // Cursor on slot 0 (t = 0: sin(−π) ≈ 0 → 0.875·128 = 112), then the 8 icons (unselected at alpha 64).
@@ -1031,7 +1047,10 @@ mod tests {
         assert_eq!(sprites.len(), 4 + 1 + 8);
         assert_eq!(sprites[6].4, 64);
         let texts = out.iter().filter(|d| matches!(d, MenuDraw::Hud(crate::hud::Draw::Text { .. }))).count();
-        // Ammo + shadow, then the name: id 0 resolves to the "Paradox! …" fallback, split at its first space.
-        assert_eq!(texts, 6);
+        // Ammo + shadow, the level + shadow (port-only), then the name: id 0 resolves to the "Paradox! …" fallback,
+        // split at its first space. The experience meter's frame and well (no fill at 0 experience).
+        assert_eq!(texts, 8);
+        let rects = out.iter().filter(|d| matches!(d, MenuDraw::Hud(crate::hud::Draw::Rect16 { .. }))).count();
+        assert_eq!(rects, 2);
     }
 }
