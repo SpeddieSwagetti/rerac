@@ -137,6 +137,26 @@ const WEAPON_TEXT_D: (i32, i32) = (25, 8);
 /// Element y on NTSC (the code picks 10 on PAL).
 const ELEMENT_Y: i32 = 18;
 
+/// Port-only weapon leveling: the experience meter in the pause menu slider's style (a grey frame, a black well, a
+/// glossy fill: dark top line, main band, shine line; orange, a brighter gold on gold weapons), 10 pixels tall from
+/// (`mx0`, `my`) to `mx1`, filled `cur / need`, at `a` (0..128, the element's alpha). Used by the weapon element and
+/// the quick select ring's centre.
+pub fn push_xp_meter(mx0: i32, my: i32, mx1: i32, a: i32, cur: i32, need: i32, gold: bool, out: &mut Vec<Draw>) {
+    // `fun_00200e08(…, 0)`'s whole-pixel corners (one pixel up and left of a sprite corner), as the boss meter.
+    let px = |v: i32| v * 16 - 8;
+    let alpha = (a.max(0) as u32) << 24;
+    let mut rect = |x0: i32, y0: i32, x1: i32, y1: i32, c: u32| out.push(Draw::Rect16 { x0: px(x0), y0: px(y0), x1: px(x1), y1: px(y1), rgba: alpha | c });
+    rect(mx0, my, mx1, my + 10, 0x0070_7070);
+    rect(mx0 + 1, my + 1, mx1 - 1, my + 9, 0);
+    let fill = (mx1 - mx0 - 2) * cur / need.max(1);
+    if 0 < fill {
+        let (dark, main, shine) = if gold { (0x009c_5943, TEXT_FROM, 0x00ff_a67c) } else { (TEXT_FROM, 0x00ff_a67c, 0x00ff_c49e) };
+        rect(mx0 + 1, my + 1, mx0 + 1 + fill, my + 2, dark);
+        rect(mx0 + 1, my + 2, mx0 + 1 + fill, my + 5, main);
+        rect(mx0 + 1, my + 5, mx0 + 1 + fill, my + 6, shine);
+    }
+}
+
 /// Icon ids (hud_text.md §1.3).
 pub mod icon {
     pub const HEALTH_SLOT: u16 = 30005;
@@ -1518,19 +1538,7 @@ impl HudState {
         self.text_right_in(Font::Small, tx, py0 + 5, colour, &label, out);
         let (mx0, my) = (x + 2, py0 + 7);
         let mx1 = (tx - label_w - 6).max(mx0 + 6);
-        // `fun_00200e08(…, 0)`'s whole-pixel corners (one pixel up and left of a sprite corner), as the boss meter.
-        let px = |v: i32| v * 16 - 8;
-        let alpha = (a.max(0) as u32) << 24;
-        let rect = |x0: i32, y0: i32, x1: i32, y1: i32, c: u32, out: &mut Vec<Draw>| out.push(Draw::Rect16 { x0: px(x0), y0: px(y0), x1: px(x1), y1: px(y1), rgba: alpha | c });
-        rect(mx0, my, mx1, my + 10, 0x0070_7070, out);
-        rect(mx0 + 1, my + 1, mx1 - 1, my + 9, 0, out);
-        let fill = (mx1 - mx0 - 2) * cur / need.max(1);
-        if 0 < fill {
-            let (dark, main, shine) = if gold { (0x0010_a0c0, 0x0030_d0ff, 0x00b0_f8ff) } else { (0x0010_60c0, 0x0020_90ff, 0x00a0_e0ff) };
-            rect(mx0 + 1, my + 1, mx0 + 1 + fill, my + 2, dark, out);
-            rect(mx0 + 1, my + 2, mx0 + 1 + fill, my + 5, main, out);
-            rect(mx0 + 1, my + 5, mx0 + 1 + fill, my + 6, shine, out);
-        }
+        push_xp_meter(mx0, my, mx1, a, cur, need, gold, out);
     }
 
     /// The banner part of 0x24fb50 (ramp ±0x80/ScaleTicks(8) per tick) and its draw 0x251b88. Not drawn (and not
