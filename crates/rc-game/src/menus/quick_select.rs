@@ -668,9 +668,26 @@ impl QuickSelect {
         let sf = (s * f).to_f32();
         let shadow = tween(sf, c.shadow_rgba.0, c.shadow_rgba.1);
         let (cx, cy) = (x0 + c.centre.0, y0 + c.centre.1);
-        let centre = |out: &mut Vec<MenuDraw>, x: i32, y: i32, rgba: u32, t: &[u8]| {
-            let wd = a.width(Font::Small, t);
-            text(out, Font::Small, x - (wd >> 1), y, rgba, t);
+        // let centre = |out: &mut Vec<MenuDraw>, x: i32, y: i32, rgba: u32, t: &[u8]| {
+        //     let wd = a.width_scaled(Font::Small, t,75);
+        //     text_scaled(out, Font::Small, x - (wd >> 1), y, rgba, t, 75);
+        // };
+        let centre = |out: &mut Vec<MenuDraw>,
+            x: i32,
+            y: i32,
+            rgba: u32,
+            t: &[u8],
+            scale_percent: u16| {
+            let wd = a.width_scaled(Font::Small, t, scale_percent);
+            text_scaled(
+                out,
+                Font::Small,
+                x - (wd >> 1),
+                y,
+                rgba,
+                t,
+                scale_percent,
+            );
         };
         let slot_item = g.quick_select[si];
         let has_ammo = self.items.ammo_of(slot_item);
@@ -679,9 +696,12 @@ impl QuickSelect {
             let s_txt = format_ammo(&c.ammo_format, ammo, max as i32);
             let (from, to) = if ammo != 0 { c.ammo_rgba } else { c.ammo_empty_rgba };
             let col = tween(sf, from, to);
-            // The ammo sits lower than the game's (cy + 12) to make room for the level and the meter.
-            centre(out, cx + 1, cy + 25, shadow, &s_txt);
-            centre(out, cx, cy + 24, col, &s_txt);
+            
+            // Weapon Ammo.
+            // centre(out, cx + 1, cy + 25, shadow, &s_txt);
+            // centre(out, cx, cy + 24, col, &s_txt);
+            centre(out, cx + 1, cy + 25, shadow, &s_txt, 75);
+            centre(out, cx, cy + 24, col, &s_txt, 75);  
             // Port-only weapon leveling: "V#" (small font) above the name, the experience meter between the name and
             // the ammo, in the weapon HUD's style.
             let k = usize::try_from(slot_item).unwrap_or(0);
@@ -696,8 +716,9 @@ impl QuickSelect {
             // text(out, Font::Small, cx - (lw >> 1) + 1, cy - 41, shadow, &label);
             // text(out, Font::Small, cx - (lw >> 1), cy - 42, ncol, &label);
 
-            text_scaled(out, Font::Small, cx - (lw >> 1) + 1, cy - 41, shadow, &label, 75);  // 75%
-            text_scaled(out, Font::Small, cx - (lw >> 1), cy - 42, ncol, &label, 75);  // 75%
+            // Weapon Level Version
+            text_scaled(out, Font::Regular, cx - (lw >> 1) + 1, cy - 41, shadow, &label, 75);  // 75%
+            text_scaled(out, Font::Regular, cx - (lw >> 1), cy - 42, ncol, &label, 75);  // 75%
             let mut meter = Vec::new();
             crate::hud::push_xp_meter(cx - 36, cy + 10, cx + 36, (sf * 128.0) as i32, cur, need, wgold, &mut meter);
             out.extend(meter.into_iter().map(MenuDraw::Hud));
@@ -713,14 +734,20 @@ impl QuickSelect {
         let y = cy + dy;
         match split {
             Some((l1, rest)) => {
-                centre(out, cx + 1, y + 1, shadow, &name[..l1]);
-                centre(out, cx, y, col, &name[..l1]);
-                centre(out, cx + 1, y + 0x11, shadow, &name[rest..]);
-                centre(out, cx, y + 0x10, col, &name[rest..]);
+                // centre(out, cx + 1, y + 1, shadow, &name[..l1]);
+                // centre(out, cx, y, col, &name[..l1]);
+                // centre(out, cx + 1, y + 0x11, shadow, &name[rest..]);
+                // centre(out, cx, y + 0x10, col, &name[rest..]);
+                centre(out, cx + 1, y + 1, shadow, &name[..l1], 100);
+                centre(out, cx, y, col, &name[..l1], 100);
+                centre(out, cx + 1, y + 0x11, shadow, &name[rest..], 100);
+                centre(out, cx, y + 0x10, col, &name[rest..], 100);
             }
             None => {
-                centre(out, cx + 1, y + 1, shadow, name);
-                centre(out, cx, y, col, name);
+                // centre(out, cx + 1, y + 1, shadow, name);
+                centre(out, cx + 1, y + 1, shadow, name, 100);
+                // centre(out, cx, y, col, name);
+                centre(out, cx, y, col, name, 100);
             }
         }
     }
@@ -772,12 +799,14 @@ impl QuickSelect {
         let col = tween(sf, cmd.label_rgba.0, cmd.label_rgba.1);
         let shadow = tween(sf, 0, 0x8000_0000);
         let (cx, y) = (x0 + c.centre.0, y0 + cmd.label_dy + c.centre.1);
-        let wd = a.width(Font::Small, label);
-        // text(out, Font::Small, cx - 1 - (wd >> 1), y - 1, shadow, label);
-        // text(out, Font::Small, cx - (wd >> 1), y, col, label);
+        // let wd = a.width(Font::Regular, label);
+        let wd = a.width_scaled(Font::Regular, label,75);  // 75%
 
-        text_scaled(out, Font::Small, cx - 1 - (wd >> 1), y - 1, shadow, label, 75);  // 75%
-        text_scaled(out, Font::Small, cx - 1 - (wd >> 1), y - 1, shadow, label, 75);  // 75%
+        // text(out, Font::Large, cx - 1 - (wd >> 1), y - 1, shadow, label);
+        // text(out, Font::Large, cx - (wd >> 1), y, col, label);
+
+        text_scaled(out, Font::Regular, cx - 1 - (wd >> 1), y - 1, shadow, label, 75);  // 75%
+        text_scaled(out, Font::Regular, cx - (wd >> 1), y, col, label, 75);  // 75%
     }
 }
 
