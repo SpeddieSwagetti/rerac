@@ -6,6 +6,12 @@
 //! The experience lives in `GameState::weapon_xp` (by item id; not part of the memory-card format, so only the gold
 //! flag survives a save / load: a gold weapon is always shown at [`MAX_LEVEL`]).
 
+/// Whether weapon leveling is on (the port option "Weapon experience"; the engine keeps it in step with the setting).
+/// Read where no weapon or HUD state has it at hand (the vendor's ammo capacity).
+static ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+pub fn enabled() -> bool { ENABLED.load(std::sync::atomic::Ordering::Relaxed) }
+pub fn set_enabled(on: bool) { ENABLED.store(on, std::sync::atomic::Ordering::Relaxed) }
+
 /// The last level; reaching it makes the weapon gold.
 pub const MAX_LEVEL: u8 = 10;
 /// Experience of one damaging hit.
@@ -57,7 +63,11 @@ pub fn weapon_name(item: usize) -> &'static str {
 
 /// The popup text of a level gained.
 pub fn popup_text(item: usize, level: u8) -> String {
-    if level >= MAX_LEVEL { format!("{} upgraded to Gold!", weapon_name(item)) } else { format!("{} reached V{}", weapon_name(item), level) }
+    if level >= MAX_LEVEL { return format!("{} upgraded to Gold!", weapon_name(item)); }
+    let mut text = format!("{} reached V{}", weapon_name(item), level);
+    // A perk gained at this level ([`crate::weapon_perks`]).
+    for (_, perk) in crate::weapon_perks::gained(item, level) { text.push_str(&format!(" - {} unlocked", crate::weapon_perks::name(perk))); }
+    text
 }
 
 #[cfg(test)]
@@ -112,7 +122,8 @@ mod tests {
         assert_eq!(progress(35, false), (15, 30));
         assert_eq!(progress(0, true), (1, 1));
         assert_eq!(display_level(0, true), MAX_LEVEL);
-        assert_eq!(popup_text(15, 3), "Blaster reached V3");
+        assert_eq!(popup_text(15, 2), "Blaster reached V2");
+        assert_eq!(popup_text(15, 3), "Blaster reached V3 - Ricochet unlocked");
         assert_eq!(popup_text(15, MAX_LEVEL), "Blaster upgraded to Gold!");
     }
 }
