@@ -23,6 +23,15 @@ use crate::hud_render::Hud2d;
 use rc_formats::font::{Font, GlyphTable, COLOUR_TABLE};
 use rc_game::hud::{text, Draw};
 
+// // Scale a value by a float and round to the nearest integer.
+// fn scaled(value: i32, scale: f32) -> i32 {
+//     (value as f32 * scale).round() as i32
+// }
+
+fn scaled(value: i32, scale_percent: u16) -> i32 {
+    (value * scale_percent as i32 + 50) / 100
+}
+
 /// The global text state `FontPrint` reads.
 #[derive(Clone, Copy, Debug)]
 pub struct TextState {
@@ -41,6 +50,25 @@ impl Default for TextState {
 /// `FontPrint(x, y, rgba, text, len)` with the glyph table and FX texture of `font`.
 #[allow(clippy::too_many_arguments)]
 pub fn font_print(out: &mut Hud2d, st: &mut TextState, glyphs: &GlyphTable, font: Font, x: i32, y: i32, rgba: u32, text: &[u8], len: i32) {
+    font_print_scaled(
+        out, st, glyphs, font, x, y, rgba, text, len, 100,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn font_print_scaled(
+    out: &mut Hud2d,
+    st: &mut TextState,
+    glyphs: &GlyphTable,
+    font: Font,
+    x: i32,
+    y: i32,
+    rgba: u32,
+    text: &[u8],
+    len: i32,
+    scale_percent: u16,
+) {
+    //let scale = scale_percent as f32 / 100.0;
     if !st.window_lock { st.table[0] = rgba; }
     let at = |i: usize| text.get(i).copied().unwrap_or(0);
     if len == 0 || at(0) == 0 { return; }
@@ -54,16 +82,53 @@ pub fn font_print(out: &mut Hud2d, st: &mut TextState, glyphs: &GlyphTable, font
         } else if let Some(g) = glyphs.get(c as usize).filter(|g| g.advance != 0) {
             if c.wrapping_add(0x80) < 0x28 {
                 let e = glyphs[c as usize + 0x40];
-                out.strip_glyph(fx, x + e.advance as i32, y + e.y_off as i32, 16, 16, e.u as i32, e.v as i32, 16, 16, colour);
+                //out.strip_glyph(fx, x + e.advance as i32, y + e.y_off as i32, 16, 16, e.u as i32, e.v as i32, 16, 16, colour);
+                out.strip_glyph(
+                    fx,
+                    x + scaled(e.advance as i32, scale_percent),
+                    y + scaled(e.y_off as i32, scale_percent),
+                    scaled(16, scale_percent),
+                    scaled(16, scale_percent),
+                    e.u as i32,
+                    e.v as i32,
+                    16,
+                    16,
+                    colour,
+                );
             }
             if c < 0x20 {
                 let avg = ((colour & 0xff) + ((colour >> 8) & 0xff) + ((colour >> 16) & 0xff)) / 3;
                 let grey = (colour & 0xff00_0000).wrapping_add(avg << 16).wrapping_add(avg << 8).wrapping_add(avg);
-                out.strip_glyph(fx, x, y + g.y_off as i32, 24, 16, g.u as i32, g.v as i32, 24, 16, grey);
+                //out.strip_glyph(fx, x, y + g.y_off as i32, 24, 16, g.u as i32, g.v as i32, 24, 16, grey);
+                out.strip_glyph(
+                    fx,
+                    x,
+                    y + scaled(g.y_off as i32, scale_percent),
+                    scaled(24, scale_percent),
+                    scaled(16, scale_percent),
+                    g.u as i32,
+                    g.v as i32,
+                    24,
+                    16,
+                    grey,
+                );
             } else if c > 0x20 {
-                out.strip_glyph(fx, x, y + g.y_off as i32, 16, 16, g.u as i32, g.v as i32, 16, 16, colour);
+                //out.strip_glyph(fx, x, y + g.y_off as i32, 16, 16, g.u as i32, g.v as i32, 16, 16, colour);
+                out.strip_glyph(
+                    fx,
+                    x,
+                    y + scaled(g.y_off as i32, scale_percent),
+                    scaled(16, scale_percent),
+                    scaled(16, scale_percent),
+                    g.u as i32,
+                    g.v as i32,
+                    16,
+                    16,
+                    colour,
+                );
             }
-            x += g.advance as i32;
+            //x += g.advance as i32;
+            x += scaled(g.advance as i32, scale_percent);
         }
         i += 1;
         if i as i32 == len || at(i) == 0 { break; }
@@ -115,6 +180,20 @@ pub fn execute(out: &mut Hud2d, st: &mut TextState, glyphs: &[GlyphTable; 3], dr
             Draw::Sprite16 { frame, x, y, w, h, alpha } => out.sprite_fine(*frame, *x, *y, *w, *h, *alpha),
             Draw::Rect16 { x0, y0, x1, y1, rgba } => out.rect_fine(*x0, *y0, *x1, *y1, *rgba),
             Draw::SpriteSub { frame, x, y, w, h, alpha } => out.sprite_sub(*frame, *x, *y, *w, *h, *alpha),
+            Draw::TextScaled {
+                font, x, y, rgba, text, scale_percent,
+            } => font_print_scaled(
+                out,
+                st,
+                &glyphs[*font as usize],
+                *font,
+                *x,
+                *y,
+                *rgba,
+                text,
+                -1,
+                *scale_percent,
+            ),
         }
     }
 }

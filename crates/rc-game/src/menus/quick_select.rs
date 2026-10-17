@@ -21,7 +21,7 @@
 //! page-table pointer `*0x15f738` (level 01: 0x17df40), the d-pad defaults 0x17e098, and the item
 //! definitions (icon +0x38, name +0x46, gold name +0x48) at `ItemTables::item_defs_addr`.
 
-use super::{scale_ticks, sprite, text, tween, MenuAssets, MenuDraw, MenuInput, Overlay};
+use super::{scale_ticks, sprite, text, text_scaled, tween, MenuAssets, MenuDraw, MenuInput, Overlay};
 use crate::game_state::{Global, HelpRec, SessionState};
 use crate::hero::physics::{fast_add_rotations, fast_cos, fast_sin, fast_subtract_rotations, PI};
 use crate::pad::{button, fast_arctan, fast_diff_rots, len2};
@@ -689,10 +689,15 @@ impl QuickSelect {
             let wgold = g.gold_weapons.get(k).is_some_and(|&b| b != 0);
             let (cur, need) = crate::weapon_level::progress(wxp, wgold);
             let label = format!("V{}", crate::weapon_level::display_level(wxp, wgold)).into_bytes();
-            let lw = a.width(Font::Small, &label);
+            // let lw = a.width(Font::Small, &label);
+            let lw = a.width_scaled(Font::Small, &label,75);  // 75%
+
             let ncol = tween(sf, c.name_rgba.0, c.name_rgba.1);
-            text(out, Font::Small, cx - (lw >> 1) + 1, cy - 41, shadow, &label);
-            text(out, Font::Small, cx - (lw >> 1), cy - 42, ncol, &label);
+            // text(out, Font::Small, cx - (lw >> 1) + 1, cy - 41, shadow, &label);
+            // text(out, Font::Small, cx - (lw >> 1), cy - 42, ncol, &label);
+
+            text_scaled(out, Font::Small, cx - (lw >> 1) + 1, cy - 41, shadow, &label, 75);  // 75%
+            text_scaled(out, Font::Small, cx - (lw >> 1), cy - 42, ncol, &label, 75);  // 75%
             let mut meter = Vec::new();
             crate::hud::push_xp_meter(cx - 36, cy + 10, cx + 36, (sf * 128.0) as i32, cur, need, wgold, &mut meter);
             out.extend(meter.into_iter().map(MenuDraw::Hud));
@@ -767,9 +772,12 @@ impl QuickSelect {
         let col = tween(sf, cmd.label_rgba.0, cmd.label_rgba.1);
         let shadow = tween(sf, 0, 0x8000_0000);
         let (cx, y) = (x0 + c.centre.0, y0 + cmd.label_dy + c.centre.1);
-        let wd = a.width(Font::Regular, label);
-        text(out, Font::Regular, cx - 1 - (wd >> 1), y - 1, shadow, label);
-        text(out, Font::Regular, cx - (wd >> 1), y, col, label);
+        let wd = a.width(Font::Small, label);
+        // text(out, Font::Small, cx - 1 - (wd >> 1), y - 1, shadow, label);
+        // text(out, Font::Small, cx - (wd >> 1), y, col, label);
+
+        text_scaled(out, Font::Small, cx - 1 - (wd >> 1), y - 1, shadow, label, 75);  // 75%
+        text_scaled(out, Font::Small, cx - 1 - (wd >> 1), y - 1, shadow, label, 75);  // 75%
     }
 }
 

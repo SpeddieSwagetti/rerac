@@ -268,6 +268,16 @@ impl MenuAssets {
     /// `GetIconFrame__Fii`.
     pub fn frame(&self, icon: u16, k: i32) -> usize { self.hud.icon_frame(icon, k) }
     pub fn frame_size(&self, frame: usize) -> (i32, i32) { self.hud.frame_sizes.get(frame).copied().unwrap_or((0, 0)) }
+    
+    /// Measure text width at a relative font scale, with `scale_percent` as a percentage (100 = 1.0x).
+    pub fn width_scaled(
+        &self,
+        font: Font,
+        text: &[u8],
+        scale_percent: u16,
+    ) -> i32 {
+        (self.width(font, text) * scale_percent as i32 + 50) / 100
+    }
 }
 
 /// `ScaleTicks` (0x220e30) on NTSC: identity.
@@ -284,6 +294,44 @@ pub fn sprite(out: &mut Vec<MenuDraw>, frame: usize, x: i32, y: i32, w: i32, h: 
 /// `FontPrint` at (x, y) (the right / centre wrappers already applied).
 pub fn text(out: &mut Vec<MenuDraw>, font: Font, x: i32, y: i32, rgba: u32, t: &[u8]) {
     out.push(MenuDraw::Hud(Draw::Text { font, x, y, rgba, text: t.to_vec() }));
+}
+
+// pub fn text_scaled(
+//     out: &mut Vec<MenuDraw>,
+//     font: Font,
+//     x: i32,
+//     y: i32,
+//     rgba: u32,
+//     t: &[u8],
+//     scale: f32,
+// ) {
+//     out.push(MenuDraw::Hud(Draw::TextScaled {
+//         font,
+//         x,
+//         y,
+//         rgba,
+//         text: t.to_vec(),
+//         scale,
+//     }));
+// }
+
+pub fn text_scaled(
+    out: &mut Vec<MenuDraw>,
+    font: Font,
+    x: i32,
+    y: i32,
+    rgba: u32,
+    t: &[u8],
+    scale_percent: u16,
+) {
+    out.push(MenuDraw::Hud(Draw::TextScaled {
+        font,
+        x,
+        y,
+        rgba,
+        text: t.to_vec(),
+        scale_percent,
+    }));
 }
 
 /// Text with the colour-code switch 0x15f45c off (`FUN_0021cc38` … `FUN_0021cc28`): the codes 0x08..0x0f are

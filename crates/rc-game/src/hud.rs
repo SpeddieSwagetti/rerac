@@ -232,6 +232,14 @@ pub enum Draw {
     Rect16 { x0: i32, y0: i32, x1: i32, y1: i32, rgba: u32 },
     /// `HudSpriteSubRect` (0x2502c8): the first `w × h` texels of the frame at their own size (UV (0,0)..(w,h)).
     SpriteSub { frame: usize, x: i32, y: i32, w: i32, h: i32, alpha: i32 },
+    TextScaled {
+        font: Font,
+        x: i32,
+        y: i32,
+        rgba: u32,
+        text: Vec<u8>,
+        scale_percent: u16,
+    },
 }
 
 /// What a slot shows (the init / update / draw callbacks + data pointer of `queue_animation_update`).
