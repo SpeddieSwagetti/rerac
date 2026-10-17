@@ -137,26 +137,34 @@ const WEAPON_TEXT_D: (i32, i32) = (25, 8);
 /// Port-only (weapon leveling): the transparent outer part of a 32-wide capsule cap sprite, in pixels (tune it if the
 /// level capsule's ends do not line up with the ammo capsule's).
 const PILL_CAP_MARGIN: i32 = 16;
+/// Port-only (weapon leveling): the level capsule's height, the level label's scale (percent of the regular font) and
+/// the experience meter's height, in pixels. The label and the meter are centred in the capsule.
+const LEVEL_PILL_H: i32 = 16;
+const LEVEL_LABEL_SCALE: u16 = 55;
+const LEVEL_METER_H: i32 = 7;
 /// Element y on NTSC (the code picks 10 on PAL).
 const ELEMENT_Y: i32 = 18;
 
 /// Port-only weapon leveling: the experience meter in the pause menu slider's style (a grey frame, a black well, a
-/// glossy fill: dark top line, main band, shine line; orange, a brighter gold on gold weapons), 10 pixels tall from
-/// (`mx0`, `my`) to `mx1`, filled `cur / need`, at `a` (0..128, the element's alpha). Used by the weapon element and
-/// the quick select ring's centre.
-pub fn push_xp_meter(mx0: i32, my: i32, mx1: i32, a: i32, cur: i32, need: i32, gold: bool, out: &mut Vec<Draw>) {
+/// glossy fill: dark top line, main band, shine line; orange, a brighter gold on gold weapons), `h` pixels tall (10
+/// is the ring's; at least 6) from (`mx0`, `my`) to `mx1`, filled `cur / need`, at `a` (0..128, the element's alpha).
+/// The fill takes the upper five eighths of the well (at least three rows). Used by the weapon element and the quick
+/// select ring's centre.
+pub fn push_xp_meter(mx0: i32, my: i32, mx1: i32, h: i32, a: i32, cur: i32, need: i32, gold: bool, out: &mut Vec<Draw>) {
     // `fun_00200e08(…, 0)`'s whole-pixel corners (one pixel up and left of a sprite corner), as the boss meter.
     let px = |v: i32| v * 16 - 8;
     let alpha = (a.max(0) as u32) << 24;
     let mut rect = |x0: i32, y0: i32, x1: i32, y1: i32, c: u32| out.push(Draw::Rect16 { x0: px(x0), y0: px(y0), x1: px(x1), y1: px(y1), rgba: alpha | c });
-    rect(mx0, my, mx1, my + 10, 0x0070_7070);
-    rect(mx0 + 1, my + 1, mx1 - 1, my + 9, 0);
+    let h = h.max(6);
+    rect(mx0, my, mx1, my + h, 0x0070_7070);
+    rect(mx0 + 1, my + 1, mx1 - 1, my + h - 1, 0);
     let fill = (mx1 - mx0 - 2) * cur / need.max(1);
     if 0 < fill {
         let (dark, main, shine) = if gold { (0x009c_5943, TEXT_FROM, 0x00ff_a67c) } else { (TEXT_FROM, 0x00ff_a67c, 0x00ff_c49e) };
+        let band = ((h - 2) * 5 / 8).max(3);
         rect(mx0 + 1, my + 1, mx0 + 1 + fill, my + 2, dark);
-        rect(mx0 + 1, my + 2, mx0 + 1 + fill, my + 5, main);
-        rect(mx0 + 1, my + 5, mx0 + 1 + fill, my + 6, shine);
+        rect(mx0 + 1, my + 2, mx0 + 1 + fill, my + band - 1, main);
+        rect(mx0 + 1, my + band - 1, mx0 + 1 + fill, my + band, shine);
     }
 }
 
@@ -1576,7 +1584,7 @@ impl HudState {
         let gold = self.inputs.gold.get(item).is_some_and(|&g| g != 0);
         let (cur, need) = crate::weapon_level::progress(xp, gold);
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
-        let (ph, py0) = (24, y + 31);
+        let (ph, py0) = (LEVEL_PILL_H, y + 31);
         // The capsule's visible ends: the left one at the centre of the weapon icon, the right one at the ammo
         // capsule's. A cap sprite is `PILL_CAP_MARGIN` / 32 transparent on its outer side (the capsule's round end is
         // its inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
@@ -1591,16 +1599,17 @@ impl HudState {
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(mid, lx + ph, py0, rcx - lx - ph, ph, bar_a, Rot::None));
         out.push(Self::sprite(cap, rcx, py0, ph, ph, bar_a, Rot::R180));
-        let label_w = self.assets.text_width_scaled(Font::Regular, &label, 75);
+        let label_w = self.assets.text_width_scaled(Font::Regular, &label, LEVEL_LABEL_SCALE);
+        let label_y = py0 + (ph - 16 * LEVEL_LABEL_SCALE as i32 / 100) / 2 - 1;
         // self.text_right_in(Font::Regular, tx + 1, py0 + 6, shadow, &label, out);
         // self.text_right_in(Font::Regular, tx, py0 + 5, colour, &label, out);
-        self.text_right_scaled(Font::Regular, tx + 1, py0 + 6, shadow, &label, 75, out);
-        self.text_right_scaled(Font::Regular, tx, py0 + 5, colour, &label,75, out);
+        self.text_right_scaled(Font::Regular, tx + 1, label_y + 1, shadow, &label, LEVEL_LABEL_SCALE, out);
+        self.text_right_scaled(Font::Regular, tx, label_y, colour, &label, LEVEL_LABEL_SCALE, out);
         // self.text_right(tx + 1, y + 32, shadow, &label, out);
         // self.text_right(tx, y + 31, colour, &label, out);
-        let (mx0, my) = (icon_centre + ph / 2 - 2, py0 + 7);
+        let (mx0, my) = (icon_centre + ph / 2 - 2, py0 + (ph - LEVEL_METER_H) / 2);
         let mx1 = (tx - label_w - 6).max(mx0 + 6);
-        push_xp_meter(mx0, my, mx1, a, cur, need, gold, out);
+        push_xp_meter(mx0, my, mx1, LEVEL_METER_H, a, cur, need, gold, out);
     }
 
     /// The banner part of 0x24fb50 (ramp ±0x80/ScaleTicks(8) per tick) and its draw 0x251b88. Not drawn (and not

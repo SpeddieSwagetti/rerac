@@ -716,7 +716,7 @@ impl QuickSelect {
                 text_scaled(out, Font::Regular, cx - (lw >> 1) + 1, cy - 41, shadow, &label, 75);
                 text_scaled(out, Font::Regular, cx - (lw >> 1), cy - 42, ncol, &label, 75);
                 let mut meter = Vec::new();
-                crate::hud::push_xp_meter(cx - 36, cy + 10, cx + 36, (sf * 128.0) as i32, cur, need, wgold, &mut meter);
+                crate::hud::push_xp_meter(cx - 36, cy + 10, cx + 36, 10, (sf * 128.0) as i32, cur, need, wgold, &mut meter);
                 out.extend(meter.into_iter().map(MenuDraw::Hud));
             } else {
                 // Weapon experience off: the game's own centre (the ammo at cy + 12, no level, no meter).
