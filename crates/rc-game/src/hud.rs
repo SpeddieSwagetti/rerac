@@ -134,6 +134,9 @@ const WEAPON_LEN: [i32; 2] = [70, 95];
 const EMPTY_FROM: u32 = 0x0020_2080;
 const EMPTY_TO: u32 = 0x8020_2080;
 const WEAPON_TEXT_D: (i32, i32) = (25, 8);
+/// Port-only (weapon leveling): the transparent outer part of a 32-wide capsule cap sprite, in pixels (tune it if the
+/// level capsule's ends do not line up with the ammo capsule's).
+const PILL_CAP_MARGIN: i32 = 16;
 /// Element y on NTSC (the code picks 10 on PAL).
 const ELEMENT_Y: i32 = 18;
 
@@ -428,6 +431,8 @@ pub struct Inputs {
     /// Port-only weapon leveling ([`crate::weapon_level`]): the experience by item id and the gold weapons 0x13e520.
     pub weapon_xp: [i32; 37],
     pub gold: [u8; 37],
+    /// The port option "Weapon experience" (Port Options): off hides the level and meter, and nothing is announced.
+    pub weapon_xp_on: bool,
     /// The vendor while it is open: its selected ammo entry (item, max ammo) or `None` (a weapon, or nothing); `None`
     /// outside the vendor. Its requests are its own (`OpenVendorMenu` / `VendorModeUpdate` / `VendorExit`).
     pub vendor: Option<Option<(u16, i32)>>,
@@ -501,6 +506,7 @@ impl Default for Inputs {
             ammo: [0; 37],
             weapon_xp: [0; 37],
             gold: [0; 37],
+            weapon_xp_on: true,
             vendor: None,
             lang: 0,
             hero_state: 0,
@@ -1257,6 +1263,11 @@ impl HudState {
     /// tick only records the levels, so loading a game does not announce them.
     fn level_popups(&mut self) {
         let inp = self.inputs;
+        // Switched off: nothing is announced, and switching it on again only records the levels (no popups).
+        if !inp.weapon_xp_on {
+            self.levels_seen = false;
+            return;
+        }
         let now: [u8; 37] = std::array::from_fn(|i| crate::weapon_level::display_level(inp.weapon_xp[i], inp.gold[i] != 0));
         if self.levels_seen {
             if let Some(i) = (0..37).find(|&i| now[i] > self.seen_levels[i]) {
@@ -1555,7 +1566,8 @@ impl HudState {
         let (tx, ty) = (x + WEAPON_TEXT_D.0 + len, y + WEAPON_TEXT_D.1);
         self.text_right(tx + 1, ty + 1, shadow, &text, out);
         self.text_right(tx, ty, colour, &text, out);
-        
+        // Port Options "Weapon experience" off: the game's own weapon element.
+        if !self.inputs.weapon_xp_on { return; }
         // Port-only weapon leveling (after Ratchet & Clank 2's weapon HUD): a second, smaller capsule under the ammo's,
         // the experience meter in the pause menu's slider style (grey frame, black well, glossy fill; orange, a
         // brighter gold on gold weapons) and the level "V#" in the small font.
@@ -1565,10 +1577,20 @@ impl HudState {
         let (cur, need) = crate::weapon_level::progress(xp, gold);
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
         let (ph, py0) = (24, y + 31);
-        let (lx, rx) = (x - 0x1c, x + 4 + x0 + lw + 32);
+        // The capsule's visible ends: the left one at the centre of the weapon icon, the right one at the ammo
+        // capsule's. A cap sprite is `PILL_CAP_MARGIN` / 32 transparent on its outer side (the capsule's round end is
+        // its inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
+        // `PILL_CAP_MARGIN` inside their sprites, and this capsule's smaller caps are placed to end at the same
+        // visible edges.
+        let margin = ph * PILL_CAP_MARGIN / 32;
+        let icon_w = self.assets.size(self.assets.icon_frame(s.icon, 3)).0;
+        let icon_centre = x + s.offset.0 + (icon_w >> 1);
+        let right_edge = x + 4 + x0 + lw + 32 - PILL_CAP_MARGIN;
+        let lx = icon_centre - margin;
+        let rcx = (right_edge - ph + margin).max(lx + ph);
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
-        out.push(Self::sprite(mid, lx + ph, py0, (rx - lx - 2 * ph).max(0), ph, bar_a, Rot::None));
-        out.push(Self::sprite(cap, rx - ph, py0, ph, ph, bar_a, Rot::R180));
+        out.push(Self::sprite(mid, lx + ph, py0, rcx - lx - ph, ph, bar_a, Rot::None));
+        out.push(Self::sprite(cap, rcx, py0, ph, ph, bar_a, Rot::R180));
         let label_w = self.assets.text_width_scaled(Font::Regular, &label, 75);
         // self.text_right_in(Font::Regular, tx + 1, py0 + 6, shadow, &label, out);
         // self.text_right_in(Font::Regular, tx, py0 + 5, colour, &label, out);
@@ -1576,7 +1598,7 @@ impl HudState {
         self.text_right_scaled(Font::Regular, tx, py0 + 5, colour, &label,75, out);
         // self.text_right(tx + 1, y + 32, shadow, &label, out);
         // self.text_right(tx, y + 31, colour, &label, out);
-        let (mx0, my) = (x + 2, py0 + 7);
+        let (mx0, my) = (icon_centre + ph / 2 - 2, py0 + 7);
         let mx1 = (tx - label_w - 6).max(mx0 + 6);
         push_xp_meter(mx0, my, mx1, a, cur, need, gold, out);
     }

@@ -89,6 +89,7 @@ pub mod text {
     pub const FAR: i32 = -0x191;
     pub const FARTHER: i32 = -0x192;
     pub const MAXIMUM: i32 = -0x193;
+    pub const WEAPON_XP: i32 = -0x1a0;
     /// The game's own "on" / "off" (20314 / 20315, the Subtitles / HelpDesk toggle values).
     pub const ON: i32 = 20314;
     pub const OFF: i32 = 20315;
@@ -127,6 +128,7 @@ pub mod text {
             FAR => b"Far",
             FARTHER => b"Farther",
             MAXIMUM => b"Maximum",
+            WEAPON_XP => b"Weapon experience",
             _ => return None,
         })
     }
@@ -156,6 +158,9 @@ pub enum Setting {
     /// How far away models keep their full detail: value 0 Original (the game's distances), 1 Far (×2), 2 Farther (×4),
     /// 3 Maximum (always).
     Detail,
+    /// Weapon leveling (rc_game::weapon_level, after Ratchet & Clank 2): value 0 on (the default), 1 off (the game's
+    /// own weapons: no experience, no level or meter on the HUD and the ring, no popups).
+    WeaponXp,
 }
 
 /// One row: the setting, its label and the ids of its values (✕ cycles through them).
@@ -177,6 +182,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { setting: Setting::Aspect, label: text::ASPECT, values: &[text::ASPECT_4_3, text::ASPECT_16_10, text::ASPECT_16_9] },
     Entry { setting: Setting::Resolution, label: text::RESOLUTION, values: &[text::RES_WINDOW, text::RES_416, text::RES_720, text::RES_1080, text::RES_1440, text::RES_2160] },
     Entry { setting: Setting::Fullscreen, label: text::FULLSCREEN, values: &[text::OFF, text::ON] },
+    Entry { setting: Setting::WeaponXp, label: text::WEAPON_XP, values: &[text::ON, text::OFF] },
 ];
 
 /// The list's run-time state: cursor, each row's value index and each row's selectable values (bit k = value k;

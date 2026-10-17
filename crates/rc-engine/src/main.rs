@@ -33,6 +33,7 @@ mod asset_write;
 mod audio_out;
 mod determinism;
 mod display;
+mod weapon_xp_setting;
 mod display_blend;
 mod disc_source;
 mod fly_cam;

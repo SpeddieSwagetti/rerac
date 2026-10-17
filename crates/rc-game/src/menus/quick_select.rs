@@ -622,8 +622,9 @@ impl QuickSelect {
     }
 
     /// `QuickSelectDraw` 0x24d938. `tick` = the game tick 0x15f5cc (cursor pulse). `xp` (port-only weapon leveling,
-    /// `GameState::weapon_xp`): the centre of a weapon with ammo shows its level and experience meter.
-    pub fn draw(&self, a: &MenuAssets, g: &Global, xp: &[i32; 37], tick: u64, listeners: i32, out: &mut Vec<MenuDraw>) {
+    /// `GameState::weapon_xp`; None with Port Options "Weapon experience" off): the centre of a weapon with ammo
+    /// shows its level and experience meter.
+    pub fn draw(&self, a: &MenuAssets, g: &Global, xp: Option<&[i32; 37]>, tick: u64, listeners: i32, out: &mut Vec<MenuDraw>) {
         if !self.open { return; }
         if self.command_page {
             self.draw_commands(a, tick, listeners, out);
@@ -700,28 +701,28 @@ impl QuickSelect {
             // Weapon Ammo.
             // centre(out, cx + 1, cy + 25, shadow, &s_txt);
             // centre(out, cx, cy + 24, col, &s_txt);
-            centre(out, cx + 1, cy + 25, shadow, &s_txt, 75);
-            centre(out, cx, cy + 24, col, &s_txt, 75);  
-            // Port-only weapon leveling: "V#" (small font) above the name, the experience meter between the name and
-            // the ammo, in the weapon HUD's style.
-            let k = usize::try_from(slot_item).unwrap_or(0);
-            let wxp = xp.get(k).copied().unwrap_or(0);
-            let wgold = g.gold_weapons.get(k).is_some_and(|&b| b != 0);
-            let (cur, need) = crate::weapon_level::progress(wxp, wgold);
-            let label = format!("V{}", crate::weapon_level::display_level(wxp, wgold)).into_bytes();
-            // let lw = a.width(Font::Small, &label);
-            let lw = a.width_scaled(Font::Small, &label,75);  // 75%
-
-            let ncol = tween(sf, c.name_rgba.0, c.name_rgba.1);
-            // text(out, Font::Small, cx - (lw >> 1) + 1, cy - 41, shadow, &label);
-            // text(out, Font::Small, cx - (lw >> 1), cy - 42, ncol, &label);
-
-            // Weapon Level Version
-            text_scaled(out, Font::Regular, cx - (lw >> 1) + 1, cy - 41, shadow, &label, 75);  // 75%
-            text_scaled(out, Font::Regular, cx - (lw >> 1), cy - 42, ncol, &label, 75);  // 75%
-            let mut meter = Vec::new();
-            crate::hud::push_xp_meter(cx - 36, cy + 10, cx + 36, (sf * 128.0) as i32, cur, need, wgold, &mut meter);
-            out.extend(meter.into_iter().map(MenuDraw::Hud));
+            if let Some(xp) = xp {
+                centre(out, cx + 1, cy + 25, shadow, &s_txt, 75);
+                centre(out, cx, cy + 24, col, &s_txt, 75);
+                // Port-only weapon leveling: "V#" (small font) above the name, the experience meter between the name
+                // and the ammo, in the weapon HUD's style.
+                let k = usize::try_from(slot_item).unwrap_or(0);
+                let wxp = xp.get(k).copied().unwrap_or(0);
+                let wgold = g.gold_weapons.get(k).is_some_and(|&b| b != 0);
+                let (cur, need) = crate::weapon_level::progress(wxp, wgold);
+                let label = format!("V{}", crate::weapon_level::display_level(wxp, wgold)).into_bytes();
+                let lw = a.width_scaled(Font::Small, &label, 75);
+                let ncol = tween(sf, c.name_rgba.0, c.name_rgba.1);
+                text_scaled(out, Font::Regular, cx - (lw >> 1) + 1, cy - 41, shadow, &label, 75);
+                text_scaled(out, Font::Regular, cx - (lw >> 1), cy - 42, ncol, &label, 75);
+                let mut meter = Vec::new();
+                crate::hud::push_xp_meter(cx - 36, cy + 10, cx + 36, (sf * 128.0) as i32, cur, need, wgold, &mut meter);
+                out.extend(meter.into_iter().map(MenuDraw::Hud));
+            } else {
+                // Weapon experience off: the game's own centre (the ammo at cy + 12, no level, no meter).
+                centre(out, cx + 1, cy + 13, shadow, &s_txt, 100);
+                centre(out, cx, cy + 12, col, &s_txt, 100);
+            }
         }
         let col = tween(sf, c.name_rgba.0, c.name_rgba.1);
         let item = e.item;
@@ -1075,7 +1076,7 @@ mod tests {
         let mut g = global([10, 11, 12, 13, 14, 15, 16, 17]);
         g.ammo[10] = 12;
         let mut out = vec![];
-        q.draw(&a, &g, &[0; 37], 0, 0, &mut out);
+        q.draw(&a, &g, Some(&[0; 37]), 0, 0, &mut out);
         let sprites: Vec<_> = out.iter().filter_map(|d| match d { MenuDraw::Hud(crate::hud::Draw::Sprite { x, y, w, h, alpha, .. }) => Some((*x, *y, *w, *h, *alpha)), _ => None }).collect();
         assert_eq!(&sprites[..4], &[(20, 108, 105, 100, 128), (230, 308, -105, -100, 128), (230, 108, -105, 100, 128), (20, 308, 105, -100, 128)]);
         // Cursor on slot 0 (t = 0: sin(−π) ≈ 0 → 0.875·128 = 112), then the 8 icons (unselected at alpha 64).
@@ -1083,7 +1084,7 @@ mod tests {
         assert!((sprites[4].4 - 112).abs() <= 1);
         assert_eq!(sprites.len(), 4 + 1 + 8);
         assert_eq!(sprites[6].4, 64);
-        let texts = out.iter().filter(|d| matches!(d, MenuDraw::Hud(crate::hud::Draw::Text { .. }))).count();
+        let texts = out.iter().filter(|d| matches!(d, MenuDraw::Hud(crate::hud::Draw::Text { .. } | crate::hud::Draw::TextScaled { .. }))).count();
         // Ammo + shadow, the level + shadow (port-only), then the name: id 0 resolves to the "Paradox! …" fallback,
         // split at its first space. The experience meter's frame and well (no fill at 0 experience).
         assert_eq!(texts, 8);
