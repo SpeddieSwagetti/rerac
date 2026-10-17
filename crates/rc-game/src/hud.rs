@@ -134,17 +134,16 @@ const WEAPON_LEN: [i32; 2] = [70, 95];
 const EMPTY_FROM: u32 = 0x0020_2080;
 const EMPTY_TO: u32 = 0x8020_2080;
 const WEAPON_TEXT_D: (i32, i32) = (25, 8);
-/// Port-only (weapon leveling): the transparent outer part of a 32-wide capsule cap sprite, in pixels (tune it if the
-/// level capsule's ends do not line up with the ammo capsule's).
+//// left margin for pill capsule.
 const PILL_CAP_MARGIN: i32 = 16;
 /// Port-only (weapon leveling): the level capsule's height, the level label's scale (percent of the regular font) and
 /// the experience meter's height, in pixels. The label and the meter are centred in the capsule.
-const LEVEL_PILL_H: i32 = 16;
-const LEVEL_LABEL_SCALE: u16 = 55;
-const LEVEL_METER_H: i32 = 7;
+const LEVEL_PILL_H: i32 = 20;
+const LEVEL_LABEL_SCALE: u16 = 60;
+const LEVEL_METER_H: i32 = 8;
 /// Port-only (weapon leveling): the level row's gap below the ammo capsule (the whole row moves with it), and the
 /// meter's nudge down in the capsule (the capsule's round sprite sits lower than its box, so the exact centre looks high).
-const LEVEL_ROW_GAP: i32 = 4;
+const LEVEL_ROW_GAP: i32 = 1;
 const LEVEL_METER_DY: i32 = 1;
 /// Element y on NTSC (the code picks 10 on PAL).
 const ELEMENT_Y: i32 = 18;
