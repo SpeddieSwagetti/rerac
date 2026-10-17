@@ -153,7 +153,8 @@ const LEVEL_LABEL_GAP: i32 = 4;
 /// its height) with overrides from the environment, read once, to tune it without rebuilding:
 /// `RC_LEVEL_PILL_MARGIN`, `RC_LEVEL_PILL_H`, `RC_LEVEL_LABEL_SCALE`, `RC_LEVEL_METER_H`, `RC_LEVEL_ROW_GAP`,
 /// `RC_LEVEL_METER_DY`, `RC_LEVEL_PAD` (the capsule's inner padding, left of the meter and right of the label),
-/// `RC_LEVEL_LABEL_GAP`, and `RC_LEVEL_LEFT_DX` / `RC_LEVEL_RIGHT_DX` (shift the capsule's left / right end).
+/// `RC_LEVEL_LABEL_GAP`, `RC_LEVEL_LEFT_DX` / `RC_LEVEL_RIGHT_DX` (shift the capsule's left / right end) and
+/// `RC_LEVEL_ICON_W` (the weapon icon's width the left end is measured from; 0: the item's own frame).
 #[derive(Debug)]
 struct LevelLayout {
     cap_margin: i32,
@@ -166,6 +167,7 @@ struct LevelLayout {
     label_gap: i32,
     left_dx: i32,
     right_dx: i32,
+    icon_w: i32,
 }
 
 fn env_or<T: std::str::FromStr>(name: &str, default: T) -> T { std::env::var(name).ok().and_then(|v| v.trim().parse().ok()).unwrap_or(default) }
@@ -185,6 +187,7 @@ fn level_layout() -> &'static LevelLayout {
             label_gap: env_or("RC_LEVEL_LABEL_GAP", LEVEL_LABEL_GAP),
             left_dx: env_or("RC_LEVEL_LEFT_DX", 0),
             right_dx: env_or("RC_LEVEL_RIGHT_DX", 0),
+            icon_w: env_or("RC_LEVEL_ICON_W", 0),
         };
         if std::env::vars().any(|(k, _)| k.starts_with("RC_LEVEL_")) { eprintln!("weapon level HUD layout: {l:?}"); }
         l
@@ -1636,18 +1639,20 @@ impl HudState {
         let label = format!("V{}", crate::weapon_level::display_level(xp, gold)).into_bytes();
         let lay = level_layout();
         let (ph, py0) = (lay.pill_h, y + 31 + lay.row_gap);
-        // The capsule's visible ends: the left one halfway between the weapon icon and the ammo count (measured on the
-        // widest count, "max/max", so the capsule does not move as the ammo changes), the right one at the ammo
-        // capsule's. A cap sprite is `cap_margin` / 32 transparent on its outer side (the capsule's round end is its
+        // The level row is the same for every weapon (the same size and place whatever the ammo capacity): its visible
+        // ends are measured on the standard ammo capsule (`WEAPON_LEN[0]`, a count of at most "99/99"), not on the
+        // weapon's own, which is longer above 99 rounds. The left end is halfway between the weapon icon and the
+        // ammo count, the right one at the standard capsule's. A cap sprite is `cap_margin` / 32 transparent on its outer side (the capsule's round end is its
         // inner part), so the 32-wide caps of the ammo capsule (left at x − 0x1c, right at x + 4 + x0 + lw) end
         // `cap_margin` inside their sprites, and this capsule's smaller caps are placed to end at the same visible
         // edges.
         let margin = ph * lay.cap_margin / 32;
-        let icon_w = self.assets.size(self.assets.icon_frame(s.icon, 3)).0;
+        let icon_w = if 0 < lay.icon_w { lay.icon_w } else { self.assets.size(self.assets.icon_frame(s.icon, 3)).0 };
         let icon_right = x + s.offset.0 + icon_w;
-        let ammo_left = tx - self.assets.text_width(Font::Regular, format!("{}/{}", s.max, s.max).as_bytes());
+        let (len0, lw0) = (WEAPON_LEN[0], (WEAPON_LEN[0] as f32 * sf) as i32);
+        let ammo_left = x + WEAPON_TEXT_D.0 + len0 - self.assets.text_width(Font::Regular, b"99/99");
         let left_edge = (icon_right + ammo_left) / 2 + lay.left_dx;
-        let right_edge = x + 4 + x0 + lw + 32 - lay.cap_margin + lay.right_dx;
+        let right_edge = x + 4 + x0 + lw0 + 32 - lay.cap_margin + lay.right_dx;
         let lx = left_edge - margin;
         let rcx = (right_edge - ph + margin).max(lx + ph);
         out.push(Self::sprite(cap, lx, py0, ph, ph, bar_a, Rot::None));
