@@ -273,6 +273,7 @@ impl Plugin for GameplayPlugin {
                 (setup, input_map::sample_system, set_budget, keys).chain().after(bevy::input::InputSystems),
             )
             .add_systems(FixedUpdate, tick.in_set(GameTick).before(crate::particle_render::tick))
+            .add_systems(FixedUpdate, elapsed_frame.after(GameTick).after(crate::menu_render::MenuFrameSet))
             .add_systems(Update, (show_reloaded, debug_dump, respawn_probe))
             .add_systems(PostUpdate, ratchet_visibility.before(bevy::camera::visibility::VisibilitySystems::VisibilityPropagate))
             .add_systems(RunFixedMainLoop, play_camera::apply.in_set(RunFixedMainLoopSystems::AfterFixedMainLoop))
@@ -305,6 +306,19 @@ pub struct GameTick;
 /// The persistent game state (what the memory card saves), `rc_game::game_state`.
 #[derive(Resource)]
 pub struct Persistent(pub GameState);
+
+/// `FUN_00226e08` (level01 0x29aa10), called at the end of every frame of the main loop (`entry` 0x259c40; boot
+/// 0x2326b4 / 0x232708 / 0x232748) whatever the mode (unlike the play time 0x15eea4 of the tick): the elapsed time
+/// 0x15ee24 + 1 per 60 Hz frame, unless 0x15f5ac is set: `SceneController` 0x28c990 sets it on the page menu's frames
+/// of kinds 2 (the pause menu's root page) / 0x1a / 0x1e / 0x1f, and the menu modes' frame path clears it after the
+/// call, so those frames do not count (the PAL +10 per 50 frames does not apply, NTSC only). After the menu frame, so
+/// it sees that frame's flag. The save slots show it as `hh:mm` (rc_game::menus::pause::saves); without it they
+/// stayed at 00:00 (GitHub #8).
+fn elapsed_frame(state: Option<ResMut<Persistent>>, play: Option<ResMut<Play>>) {
+    let hold = play.is_some_and(|mut p| std::mem::take(&mut p.svc.elapsed_hold));
+    if hold { return; }
+    if let Some(mut s) = state { s.0.global.elapsed = s.0.global.elapsed.wrapping_add(1); }
+}
 
 /// The session-only state (hero HP, temporary items, Clank hidden, tick scale).
 #[derive(Resource)]
@@ -2191,8 +2205,9 @@ fn tick(
         reload_load_pass(p, coll, particles.as_deref_mut(), state.as_deref().map(|s| s.0.global.vendor));
         if let Some(a) = audio.as_deref_mut() { a.system().death_reload(checkpoint); }
         // The main loop's `fun_001fee88` after the reload (L01 0x259c40, as at the level's first load): every HUD slot
-        // emptied and hidden at once, so an element shown at the death (the oxygen meter of a drowning) does not linger.
-        if let Some(f) = hud_feed.as_deref_mut() { f.reset = f.reset.wrapping_add(1); }
+        // emptied and hidden at once, so an element shown at the death (the oxygen meter of a drowning) does not linger;
+        // unlike the vendor's `FUN_0024fb00` it leaves the ammo counter shown (the port held it off until a vendor).
+        if let Some(f) = hud_feed.as_deref_mut() { f.empty = f.empty.wrapping_add(1); }
         println!("gameplay: death reload done: respawned at {}", if checkpoint { "the checkpoint" } else { "the uid-0 moby" });
     }
 
