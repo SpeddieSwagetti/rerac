@@ -539,6 +539,12 @@ pub struct PageMenu {
     pub lang: u32,
     /// The price records' `{u16 has ammo (+8), u16 max ammo (+0xe)}` by item (0x1c4530 + 0x18·id), from the engine.
     pub ammo_records: Vec<(u16, u16)>,
+    /// Port-only weapon mods: the Weapons page's mod selector is open (`mod_mode`; the grid is held while it is), its
+    /// cursor (an index of `weapon_mods::MODS`), and the keys it consumed this tick (the grid skips that tick too, so
+    /// its ✕ "Equip" does not fire with the selector's ✕).
+    pub mod_mode: bool,
+    pub mod_cursor: u8,
+    pub mod_block: bool,
     /// The Items page's gold bolt moby while it exists: its turn about x (`pages::gold_enter`).
     pub gold_spin: Option<f32>,
     /// The map page (`map_page`; the live map system moved in while the menu is open).
@@ -594,6 +600,9 @@ impl PageMenu {
             log_ids: crate::help::read_log_ids(ov),
             lang: 0,
             ammo_records: Vec::new(),
+            mod_mode: false,
+            mod_cursor: 0,
+            mod_block: false,
             gold_spin: None,
             map: map_page::MapPage::new(ov),
             media: media::MediaMenu::default(),
@@ -958,7 +967,7 @@ impl PageMenu {
                 pages::controls_update(self, w, lang)
             }
             pages::func::SLOTS_UPDATE => pages::slots_update(self, w, inp, gs, out),
-            pages::func::AMMO_UPDATE => 0,
+            pages::func::AMMO_UPDATE => pages::ammo_update(self, inp, gs, out),
             pages::func::AMMO_MODEL_UPDATE => pages::ammo_model_update(self, w),
             pages::func::TEXT_UPDATE => {
                 pages::text_update(self, w);

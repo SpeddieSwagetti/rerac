@@ -172,10 +172,14 @@ pub fn resolve(w: &mut World, id: MobyId, hit: Option<HitRecord>, d: usize, flag
     // weapon in his hand experience (`crate::weapon_level`).
     // (The world's hero is read-only here: the hit is counted in the services and the engine credits the weapon
     // after the tick, `Weapons::credit_hit`.)
-    if r.damage > 0.0 && cls != 0x47 && w.hero.weapons.xp_on {
+    if r.damage > 0.0 && cls != 0x47 && rec.flags & crate::weapon_mods::MOD_TAG == 0 && w.hero.weapons.xp_on {
         w.svc.weapon_hits += 1;
-        // The weapon's level damage bonus (`crate::weapon_stats`).
+        // The weapon's level damage bonus (`crate::weapon_stats`), then its mod and the acid's bonus
+        // (`crate::weapon_mods`).
         r.damage *= crate::weapon_stats::damage_factor(w);
+        let mut damage = r.damage;
+        crate::weapon_mods::on_hit(w, id, &rec, &mut damage);
+        r.damage = damage;
     }
     if let Some(kr) = super::header(w, id).knock {
         super::set_pu8(w, id, kr + super::knock::k::BURN, (kind == 4) as u8);

@@ -2319,6 +2319,7 @@ fn tick(
         p.game.hero.weapons.xp = gs.0.weapon_xp;
         // The port option on / off, and the held weapon's fire-rate bonus (crate::weapon_stats).
         p.game.hero.weapons.xp_on = crate::weapon_xp_setting::enabled();
+        p.game.hero.weapons.mod_sel = gs.0.weapon_mod;
         let held_now = p.game.hero.items.slot.id;
         p.game.hero.weapons.speed_up_fire(held_now);
         {
