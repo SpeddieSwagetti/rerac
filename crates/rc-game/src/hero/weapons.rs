@@ -163,6 +163,8 @@ pub struct Weapons {
     pub xp: [i32; N],
     /// The port option "Weapon experience" (mirrored by the engine every tick): off, no experience, bonuses or perks.
     pub xp_on: bool,
+    /// The mod chosen for each weapon (mirrored from `GameState::weapon_mod`; `weapon_mods::MODS` index).
+    pub mod_sel: [u8; N],
     /// The fire-rate bonus's carry (`speed_up_fire`).
     pub fire_accum: f32,
     pub last_fired: i32,
@@ -175,7 +177,7 @@ impl Default for Weapons {
             ammo: [0; N], uses_ammo: [false; N], used: [0; N], picked: [0; N], glove: Glove::default(), layers: [None; 5], nodes_made: 0, layer_fade: 0, layer_seq: 0,
             arm_item: 0, deferred: None, throws: 0, defs: Vec::new(), gold: [0; N], pyro: Default::default(), pending_draw: false, pending_idle: false,
             aim: None, aim_pos: [0.0; 3], blaster: Default::default(), ryno: Default::default(), devastator: Default::default(), tesla: Default::default(), pending_anim: None, markers: Default::default(), reactive: Default::default(), visibomb: Default::default(),
-            xp: [0; N], xp_on: true, fire_accum: 0.0, last_fired: -1, level_ups: Vec::new(),
+            xp: [0; N], xp_on: true, mod_sel: [0; N], fire_accum: 0.0, last_fired: -1, level_ups: Vec::new(),
         }
     }
 }

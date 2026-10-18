@@ -362,6 +362,9 @@ pub struct GameState {
     pub pads: BTreeMap<(Scope, i32), Vec<u8>>,
     /// Port-only (not in the card format): weapon experience by item id ([`crate::weapon_level`]).
     pub weapon_xp: [i32; 37],
+    /// Port-only: the mod chosen for each weapon by item id (`weapon_mods::MODS` index, 0 none). A preference, not
+    /// progress: kept when a save is loaded.
+    pub weapon_mod: [u8; 37],
 }
 
 fn align4(n: usize) -> usize { (n + 3) & !3 }
@@ -369,7 +372,7 @@ fn align4(n: usize) -> usize { (n + 3) & !3 }
 impl GameState {
     /// All chunks zero (the RAM before a restore).
     pub fn zeroed(tables: ChunkTables) -> GameState {
-        GameState { tables, global: Global::zeroed(), levels: (0..LEVEL_SLOTS).map(|_| LevelState::zeroed()).collect(), raw: BTreeMap::new(), pads: BTreeMap::new(), weapon_xp: [0; 37] }
+        GameState { tables, global: Global::zeroed(), levels: (0..LEVEL_SLOTS).map(|_| LevelState::zeroed()).collect(), raw: BTreeMap::new(), pads: BTreeMap::new(), weapon_xp: [0; 37], weapon_mod: [0; 37] }
     }
 
     /// New game (`load_and_initialize_level_chunk` 0x209370): restore the disc template

@@ -397,6 +397,8 @@ impl Scheduler {
         part_hits(w);
         // The Hoverboard hero code's stores of the last hero update (classes::units::hoverboard).
         classes::units::hoverboard::apply(w);
+        // Port-only weapon mods: the damage ticks of the burn / acid effects (crate::weapon_mods).
+        crate::weapon_mods::tick_status(w);
         let (list, targets) = build_active_list(w.table, w.camera, &w.svc.groups);
         w.svc.targets.clone_from(&targets);
         self.targets = targets;

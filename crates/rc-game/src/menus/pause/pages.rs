@@ -452,6 +452,52 @@ pub fn slots_draw(m: &mut PageMenu, w: u32, a: &MenuAssets, gs: &GameState, vsyn
 // ---------------------------------------------------------------------------------------------------
 // Weapons: the ammo text
 
+/// Port-only weapon mods: the Weapons page's mod selector, for the focused weapon (one that damages: `weapon_mods`).
+/// □ opens it (the cursor on the weapon's mod); ◄ / ► move the cursor over None, Acid, Burn, Shock; ✕ applies the one
+/// under it (`GameState::weapon_mod`; one mod per weapon, so it replaces the last) and closes; △ or □ (or the menu
+/// keys) close without applying. The grid does not move or equip meanwhile (`PageMenu::mod_mode`, `mod_block`).
+/// Off with the port option "Weapon experience".
+pub fn ammo_update(m: &mut PageMenu, inp: &MenuInput, gs: &mut GameState, out: &mut MenuOut) -> i32 {
+    m.mod_block = false;
+    let item = gadgets::focused_item(m).filter(|&i| owned(gs, i)).map(|i| i as usize);
+    if !crate::weapon_level::enabled() || !item.is_some_and(crate::weapon_mods::can_mod) {
+        m.mod_mode = false;
+        return 0;
+    }
+    let item = item.unwrap_or(0);
+    let keys = inp.pressed_u;
+    if !m.mod_mode {
+        if keys & button::SQUARE != 0 {
+            m.mod_mode = true;
+            m.mod_block = true;
+            m.mod_cursor = gs.weapon_mod.get(item).copied().unwrap_or(0).min(crate::weapon_mods::MODS.len() as u8 - 1);
+            out.sounds.push(MenuSound::Confirm);
+        }
+        return 0;
+    }
+    m.mod_block = true;
+    let n = crate::weapon_mods::MODS.len() as u8;
+    if keys & button::LEFT != 0 {
+        m.mod_cursor = (m.mod_cursor + n - 1) % n;
+        out.sounds.push(MenuSound::Cursor);
+    }
+    if keys & button::RIGHT != 0 {
+        m.mod_cursor = (m.mod_cursor + 1) % n;
+        out.sounds.push(MenuSound::Cursor);
+    }
+    if keys & button::CROSS != 0 {
+        if let Some(c) = gs.weapon_mod.get_mut(item) { *c = m.mod_cursor; }
+        m.mod_mode = false;
+        out.sounds.push(MenuSound::Confirm);
+    } else if keys & (button::TRIANGLE | button::SQUARE | 0xd00) != 0 {
+        m.mod_mode = false;
+    }
+    0
+}
+
+/// The mod strip's accent (applied mod): orange, as the weapon HUD's experience meter.
+const MOD_ORANGE: u32 = 0x8020_90ff;
+
 /// `fun_0021f158` (0x292b60).
 pub fn ammo_draw(m: &mut PageMenu, w: u32, a: &MenuAssets, gs: &GameState, records: &[(u16, u16)], out: &mut Vec<MenuDraw>) -> u32 {
     let item = gadgets::focused_item(m).unwrap_or(0);
@@ -466,8 +512,37 @@ pub fn ammo_draw(m: &mut PageMenu, w: u32, a: &MenuAssets, gs: &GameState, recor
         let n = |v: i32| if v < 1000 { format!("{v}") } else { format!("{},{:03}", v / 1000, v % 1000) };
         format!("{}/{}", n(ammo), n(max as i32)).into_bytes()
     };
-    let win = wtext::Window::new(0, wh as i16, 0, ww as i16, (ww >> 1) as i16, (wh >> 1) as i16, 0x10, wtext::CENTRE_LINES | wtext::CENTRE_BLOCK);
-    out.push(MenuDraw::Hud(Draw::TextWindow { font: Font::Regular, window: win, rgba: LIGHT_BLUE, text: s }));
+    // Port-only weapon mods: a weapon that can take one shows the ammo in the panel's upper part and, under it, a strip
+    // of four boxes (None, Acid, Burn, Shock): the applied one in orange, the selector's cursor lit; while the
+    // selector is open the ammo is replaced by the keys. A "Square: Mod" reminder sits left of the ammo.
+    let modded = crate::weapon_level::enabled() && has_ammo != 0 && crate::weapon_mods::can_mod(item as usize);
+    let (pw, ph) = (ww as i32, wh as i32);
+    let (strip_h, strip_top) = (14, ph - 4 - 14);
+    let half = if modded { (strip_top - 2).max(8) as i16 } else { wh as i16 };
+    if modded && m.mod_mode {
+        let hint = b"< >  Choose      X  Apply      Triangle  Cancel";
+        text(out, Font::Small, (pw - a.width(Font::Small, hint)) >> 1, 3, LIGHT_BLUE, hint);
+    } else {
+        let win = wtext::Window::new(0, half, 0, ww as i16, (ww >> 1) as i16, half >> 1, 0x10, wtext::CENTRE_LINES | wtext::CENTRE_BLOCK);
+        out.push(MenuDraw::Hud(Draw::TextWindow { font: Font::Regular, window: win, rgba: LIGHT_BLUE, text: s }));
+        if modded { text(out, Font::Small, 8, 3, LIGHT_BLUE, b"Square: Mod"); }
+    }
+    if modded {
+        let current = gs.weapon_mod.get(item as usize).copied().unwrap_or(0) as usize;
+        let n = crate::weapon_mods::MODS.len() as i32;
+        let gap = 4;
+        let bw = (pw - 16 - gap * (n - 1)) / n;
+        for (i, md) in crate::weapon_mods::MODS.iter().enumerate() {
+            let x0 = 8 + i as i32 * (bw + gap);
+            let (x1, y1) = (x0 + bw, strip_top + strip_h);
+            let (cursor, applied) = (m.mod_mode && m.mod_cursor as usize == i, current == i);
+            let frame = if cursor { LIGHT_BLUE } else if applied { MOD_ORANGE } else { 0x8040_4040 };
+            out.push(MenuDraw::Rect { x0, y0: strip_top, x1, y1, rgba: frame });
+            out.push(MenuDraw::Rect { x0: x0 + 1, y0: strip_top + 1, x1: x1 - 1, y1: y1 - 1, rgba: m.consts.navy });
+            let name = md.name().as_bytes();
+            text(out, Font::Small, x0 + ((bw - a.width(Font::Small, name)) >> 1), strip_top + 1, if applied { MOD_ORANGE } else { LIGHT_BLUE }, name);
+        }
+    }
     2
 }
 

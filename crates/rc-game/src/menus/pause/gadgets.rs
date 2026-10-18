@@ -224,6 +224,8 @@ pub fn grid_enter(m: &mut PageMenu, w: u32, refocus: bool) {
 /// `FUN_0028f260`: the focused grid's keys (module docs).
 pub fn grid_update(m: &mut PageMenu, w: u32, inp: &MenuInput, gs: &mut GameState, out: &mut MenuOut) -> i32 {
     if !m.is_focus(w) { return 0; }
+    // Port-only weapon mods: the Weapons page's mod selector has the keys.
+    if m.mod_mode || m.mod_block { return 0; }
     if let Some(r) = m.generic_keys(inp, false, gs.global.level) { return r; }
     let Some(Data::Grid(g)) = m.widgets.get(&w).map(|x| &x.data) else { return 0 };
     let g = g.clone();
