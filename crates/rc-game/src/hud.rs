@@ -721,6 +721,15 @@ impl HudState {
         if self.inputs.mode == 5 && slot != 0 && slot != 2 { return 0; }
         let s = &mut self.slots[slot];
         if s.last.same(&req) { return s.handle; }
+        // Port-only weapon leveling: a level-up changes the held weapon's ammo capacity (`weapon_stats::max_ammo`), the
+        // one thing of a weapon request that can change while the weapon stays. A new request would wait for the slot to
+        // hide, which its flag 0x10 (kept up) never lets it do, and the weapon switch's release (`set_flags`) does not
+        // touch a slot with a request pending: the element would be stuck. The capacity is updated in place instead.
+        if matches!(req.element, Element::Weapon { .. }) && !s.pending && (s.last.flags, s.last.icon, s.last.element) == (req.flags, req.icon, req.element) {
+            s.last.max = req.max;
+            s.max = req.max;
+            return s.handle;
+        }
         s.last = req;
         s.handle = self.next_handle;
         self.next_handle += 1;
@@ -2337,6 +2346,28 @@ mod tests {
                 assert_eq!(seps[2 * j + 1], (492 + dx - 13 * k - w, 18 + dy, vec![sep]));
             }
         }
+    }
+
+    #[test]
+    fn a_weapon_level_up_changes_the_capacity_in_place() {
+        // The capacity bonus of a level-up must not re-queue the weapon (a pending request on a held-up slot never
+        // applies), so the weapon switch afterwards still works.
+        let mut h = HudState::new(assets());
+        let item = 15u16;
+        let mut inp = Inputs { weapon: Some((item, 20, 30)), ..inputs(4, 0) };
+        for _ in 0..40 { h.tick(inp); }
+        let handle = h.weapon_handle;
+        inp.weapon = Some((item, 20, 33));
+        for _ in 0..4 { h.tick(inp); }
+        assert_eq!(h.weapon_handle, handle, "the same request");
+        assert_eq!(h.slots[0].max, 33);
+        assert!(!h.slots[0].pending);
+        // Switching: the wrench (no weapon slot) releases it, then another weapon shows.
+        inp.weapon = None;
+        for _ in 0..60 { h.tick(inp); }
+        inp.weapon = Some((11, 5, 20));
+        for _ in 0..60 { h.tick(inp); }
+        assert_eq!(h.slots[0].element, Element::Weapon { item: 11 });
     }
 
     #[test]

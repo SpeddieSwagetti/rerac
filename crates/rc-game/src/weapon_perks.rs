@@ -40,20 +40,34 @@ pub enum Perk { Ricochet, Burn, Acid, Shock }
 pub fn perks(item: usize) -> &'static [(u8, Perk)] {
     use Perk::*;
     match item {
-        15 => &[(3, Ricochet), (5, Shock), (8, Burn)],
+        15 => &[(3, Ricochet), (4, Shock), (6, Burn), (8, Acid)],
         16 => &[(3, Acid), (6, Shock), (9, Burn)],
         11 => &[(3, Burn), (6, Shock), (9, Acid)],
         10 => &[(3, Burn), (6, Shock), (9, Acid)],
         17 => &[(3, Acid), (6, Burn), (9, Shock)],
-        19 => &[(3, Acid), (6, Burn)],
+        19 => &[(3, Acid), (6, Burn), (9, Shock)],
         20 => &[(3, Shock), (6, Acid), (9, Burn)],
-        13 => &[(3, Burn), (6, Shock)],
+        13 => &[(3, Burn), (6, Shock), (9, Acid)],
         23 => &[(3, Burn), (6, Acid), (9, Shock)],
-        24 => &[(3, Shock), (6, Burn)],
-        25 => &[(4, Acid)],
+        24 => &[(3, Shock), (6, Burn), (9, Acid)],
+        25 => &[(3, Acid), (6, Burn), (9, Shock)],
         _ => &[],
     }
 }
+
+/// The effects the weapon menu lets the player switch on and off, by cursor index (bit `1 << index` of
+/// `GameState::weapon_fx_off` / `Weapons::fx_off` set: that effect is off for the weapon). Every damaging weapon has
+/// all three, each unlocked at its own level ([`unlock_level`]); the Blaster's ricochet is not switchable.
+pub const EFFECTS: [Perk; 3] = [Perk::Acid, Perk::Burn, Perk::Shock];
+
+/// The switchable effects weapon `item` has (empty: it does no damage).
+pub fn effect_perks(item: usize) -> Vec<Perk> { EFFECTS.iter().copied().filter(|&e| unlock_level(item, e).is_some()).collect() }
+
+/// The level weapon `item` gets `perk` at.
+pub fn unlock_level(item: usize, perk: Perk) -> Option<u8> { perks(item).iter().find(|&&(_, p)| p == perk).map(|&(l, _)| l) }
+
+/// The bit of `perk` in a weapon's off-mask (0 for the ones that cannot be switched).
+pub fn off_bit(perk: Perk) -> u8 { EFFECTS.iter().position(|&e| e == perk).map_or(0, |i| 1 << i) }
 
 /// Whether weapon `item` at `level` has `perk`.
 pub fn has(item: usize, level: u8, perk: Perk) -> bool { perks(item).iter().any(|&(l, p)| p == perk && l <= level) }
@@ -125,6 +139,8 @@ pub fn on_hit(w: &mut World, target: MobyId, rec: &HitRecord, damage: &mut f32) 
     let flags = rec.flags | PERK_TAG;
     for &(at, perk) in perks(item) {
         if level < at { continue; }
+        // Switched off in the weapon menu (the effects only; the ricochet has no bit).
+        if w.hero.weapons.fx_off[item] & off_bit(perk) != 0 { continue; }
         match perk {
             Perk::Ricochet => {}
             Perk::Burn => w.svc.weapon_fx.add(Status { target, perk, left: 180, every: 30, dmg: 0.15 * *damage, flags }),
@@ -184,6 +200,11 @@ mod tests {
         assert_eq!((ricochet_bounces(3), ricochet_bounces(6), ricochet_bounces(9)), (2, 3, 4));
         assert_eq!(gained(10, 3), vec![(3, Perk::Burn)]);
         assert!(perks(9).is_empty());
+        // Every damaging weapon has the three switchable effects, each with its own bit.
+        assert_eq!(effect_perks(16), vec![Perk::Acid, Perk::Burn, Perk::Shock]);
+        assert!(effect_perks(21).is_empty());
+        assert_eq!((off_bit(Perk::Acid), off_bit(Perk::Burn), off_bit(Perk::Shock), off_bit(Perk::Ricochet)), (1, 2, 4, 0));
+        assert_eq!(unlock_level(25, Perk::Shock), Some(9));
     }
 
     #[test]

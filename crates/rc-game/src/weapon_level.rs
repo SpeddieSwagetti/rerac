@@ -63,11 +63,7 @@ pub fn weapon_name(item: usize) -> &'static str {
 
 /// The popup text of a level gained.
 pub fn popup_text(item: usize, level: u8) -> String {
-    if level >= MAX_LEVEL { return format!("{} upgraded to Gold!", weapon_name(item)); }
-    let mut text = format!("{} reached V{}", weapon_name(item), level);
-    // A perk gained at this level ([`crate::weapon_perks`]).
-    for (_, perk) in crate::weapon_perks::gained(item, level) { text.push_str(&format!(" - {} unlocked", crate::weapon_perks::name(perk))); }
-    text
+    if level >= MAX_LEVEL { format!("{} upgraded to Gold!", weapon_name(item)) } else { format!("{} reached V{}", weapon_name(item), level) }
 }
 
 #[cfg(test)]
@@ -123,7 +119,7 @@ mod tests {
         assert_eq!(progress(0, true), (1, 1));
         assert_eq!(display_level(0, true), MAX_LEVEL);
         assert_eq!(popup_text(15, 2), "Blaster reached V2");
-        assert_eq!(popup_text(15, 3), "Blaster reached V3 - Ricochet unlocked");
+        assert_eq!(popup_text(15, 3), "Blaster reached V3");
         assert_eq!(popup_text(15, MAX_LEVEL), "Blaster upgraded to Gold!");
     }
 }
