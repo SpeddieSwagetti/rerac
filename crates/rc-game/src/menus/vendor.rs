@@ -446,7 +446,7 @@ impl Vendor {
         let base = self.tables.shop.max_ammo(item) as i32;
         if !crate::weapon_level::enabled() || base == 0 { return base; }
         let gold = gs.global.gold_weapons.get(item).is_some_and(|&g| g != 0);
-        crate::weapon_perks::max_ammo(base, crate::weapon_level::display_level(gs.weapon_xp.get(item).copied().unwrap_or(0), gold))
+        crate::weapon_stats::max_ammo(base, crate::weapon_level::display_level(gs.weapon_xp.get(item).copied().unwrap_or(0), gold))
     }
 
     fn full(&self, gs: &GameState, item: usize) -> bool { self.max_ammo(gs, item) <= gs.global.ammo[item] }

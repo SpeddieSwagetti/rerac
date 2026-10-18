@@ -208,7 +208,7 @@ impl Weapons {
         uses(held).or_else(|| uses(self.last_fired))
     }
 
-    /// Port-only leveling: the fire-rate bonus of the held weapon's level ([`crate::weapon_perks::fire_rate_mult`]),
+    /// Port-only leveling: the fire-rate bonus of the held weapon's level ([`crate::weapon_stats::fire_rate_mult`]),
     /// called once a tick before the tick: its fire timers run out sooner (an extra tick off every 1 / bonus ticks;
     /// never the last one: the weapon's own code fires on the tick the timer reaches 0). The weapons with a fire timer:
     /// the Blaster, the Devastator, the Visibomb, the throw gloves (Bomb 10, Mine 17, Doom 20, Drone 24, Decoy 25), the
@@ -220,7 +220,7 @@ impl Weapons {
             return;
         };
         let level = crate::weapon_level::display_level(self.xp[i], self.gold[i] != 0);
-        self.fire_accum += crate::weapon_perks::fire_rate_mult(level) - 1.0;
+        self.fire_accum += crate::weapon_stats::fire_rate_mult(level) - 1.0;
         if self.fire_accum < 1.0 { return; }
         self.fire_accum -= 1.0;
         let dec = |t: &mut i32| { if 1 < *t { *t -= 1; } };

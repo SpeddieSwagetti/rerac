@@ -315,17 +315,14 @@ pub fn update(w: &mut World, id: MobyId) {
             // The gold Blaster (0x13e52f, item 15): the shot ricochets up to gold + 5 times, never off surfaces 0, 1,
             // 3, 4, 7, 0xb, 0xd; once it stops, it ends with sparks.
             let gold = w.hero.weapons.gold.get(15).copied().unwrap_or(0);
-            // Port-only weapon leveling: the ricochet perk (crate::weapon_perks) bounces a plain Blaster's shot too, 2 to
-            // 4 times by level.
-            let perk = if w.hero.weapons.xp_on { crate::weapon_perks::ricochet_bounces(crate::weapon_level::level(w.hero.weapons.xp[15])) } else { 0 };
-            if gold == 0 && perk == 0 {
+            if gold == 0 {
                 finish(w, id);
                 return;
             }
             let mut n = p::i32(&w.m(id).pvars, pv::BOUNCE) + 1;
             if matches!(h.surface_id(), 0 | 1 | 3 | 4 | 7 | 0xb | 0xd) { n = 1000; }
             p::set_i32(&mut w.mm(id).pvars, pv::BOUNCE, n);
-            if (if gold != 0 { gold as i32 + 5 } else { perk }) < n {
+            if gold as i32 + 5 < n {
                 end(w, id, true);
                 w.delete_moby(id);
                 return;

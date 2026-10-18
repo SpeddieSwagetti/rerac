@@ -156,10 +156,10 @@ impl ItemTables {
         for i in 0..N {
             self.owned[i] = h.owned.0[i] != 0;
             self.ammo[i] = h.weapons.ammo[i];
-            // Port-only weapon leveling: the level's ammo capacity bonus (crate::weapon_perks::max_ammo).
+            // Port-only weapon leveling: the level's ammo capacity bonus (crate::weapon_stats::max_ammo).
             if h.weapons.xp_on && h.weapons.uses_ammo[i] {
                 let level = crate::weapon_level::display_level(h.weapons.xp[i], h.weapons.gold[i] != 0);
-                self.max[i] = crate::weapon_perks::max_ammo(self.max[i] as i32, level).min(u16::MAX as i32) as u16;
+                self.max[i] = crate::weapon_stats::max_ammo(self.max[i] as i32, level).min(u16::MAX as i32) as u16;
             }
         }
         self
