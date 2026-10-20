@@ -238,6 +238,7 @@ pub fn collect(
     mut out: ResMut<ShadowVolumes>,
     mut trace_frame: Local<u64>,
     mut perf: Local<(std::time::Duration, u32, usize)>,
+    mut pair: Local<crate::interp::Pair<Vec<[f32; 3]>>>,
 ) {
     *trace_frame += 1;
     let t0 = std::time::Instant::now();
@@ -324,8 +325,30 @@ pub fn collect(
             *perf = Default::default();
         }
     }
+    // Frames between two ticks (crate::interp): the volumes blend from the tick before's, vertex by vertex, while the
+    // casters are the same (the same triangle count: a caster that appeared, left or changed its slab is shown as is).
+    if crate::interp::active() {
+        pair.feed(tris.clone());
+        let (prev, curr, a) = pair.view();
+        if prev.len() == curr.len() && !prev.is_empty() {
+            tris = blend_tris(prev, curr, a);
+        }
+    }
     out.tris = Arc::new(tris);
     out.debug = settings.debug;
+}
+
+/// Shadow-volume vertices between two ticks: each triangle blends unless one of its vertices moved farther than
+/// [`crate::interp::SNAP_DISTANCE`] (a teleport, a different caster in the same place of the list).
+fn blend_tris(prev: &[[f32; 3]], curr: &[[f32; 3]], a: f32) -> Vec<[f32; 3]> {
+    let mut out = curr.to_vec();
+    for (o, (p, c)) in out.chunks_exact_mut(3).zip(prev.chunks_exact(3).zip(curr.chunks_exact(3))) {
+        let moved = |k: usize| (0..3).map(|j| (c[k][j] - p[k][j]).powi(2)).sum::<f32>();
+        let limit = crate::interp::SNAP_DISTANCE * crate::interp::SNAP_DISTANCE;
+        if (0..3).any(|k| moved(k) > limit) { continue; }
+        for k in 0..3 { o[k] = crate::interp::lerp3(p[k], c[k], a); }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------------------------------
@@ -556,6 +579,18 @@ mod tests {
 
     /// The resolve's linear multiply against the GS byte `Cd − ⌈Cd/4⌉` (ALPHA_1 0x2000000064: `(0 − Cd)·0x20 >> 7
     /// + Cd`, arithmetic shift), on every display byte.
+    #[test]
+    fn volumes_blend_between_ticks() {
+        let prev = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]];
+        let curr = [[2.0, 0.0, 0.0], [3.0, 0.0, 0.0], [2.0, 1.0, 0.0]];
+        let b = blend_tris(&prev, &curr, 0.5);
+        assert_eq!(b[0], [1.0, 0.0, 0.0]);
+        assert_eq!(b[2], [1.0, 1.0, 0.0]);
+        // A triangle that jumped is shown where it is.
+        let far = [[90.0, 0.0, 0.0], [91.0, 0.0, 0.0], [90.0, 1.0, 0.0]];
+        assert_eq!(blend_tris(&prev, &far, 0.5), far.to_vec());
+    }
+
     #[test]
     fn factor_matches_the_gs_bytes() {
         let (mut worst, mut over2) = (0i32, 0);

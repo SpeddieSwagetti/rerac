@@ -475,6 +475,36 @@ pub(crate) fn update_parts(sim: &mut ParticleSim, rng: Option<&mut Rng>) {
     }
 }
 
+/// A record's place at the end of a tick (crate::interp): the particle blends from here to where it is now.
+#[derive(Clone, Copy, Default)]
+struct Snap {
+    alive: bool,
+    born: u32,
+    pos: [f32; 3],
+    /// The second end of a line or ribbon (+0x20).
+    end: [f32; 3],
+}
+
+fn snapshot(pool: &rc_game::particles::PartPool) -> Vec<Snap> {
+    let hw = (pool.hw + 1).max(0) as usize;
+    (0..hw)
+        .map(|i| {
+            let r = &pool.recs[i];
+            Snap { alive: r[1] & 0x80 == 0, born: pool.born[i], pos: rec::pos(r), end: rec::v3(r, 0x20) }
+        })
+        .collect()
+}
+
+/// Where record `i` (allocated `born` times, now at `cur`) is drawn this frame: between its place at the tick before and
+/// `cur` while blending is on and it is the same particle, else at `cur`.
+fn shown(prev: Option<(&[Snap], f32)>, i: usize, born: u32, cur: [f32; 3], end: bool) -> [f32; 3] {
+    let Some((p, a)) = prev else { return cur };
+    match p.get(i) {
+        Some(s) if s.alive && s.born == born => crate::interp::lerp3(if end { s.end } else { s.pos }, cur, a),
+        _ => cur,
+    }
+}
+
 /// Pass 1 + pass 2 for this frame's camera: rewrite the sprite buffers in back-to-front order.
 fn build_sprites(
     sim: Option<ResMut<ParticleSim>>,
@@ -484,8 +514,12 @@ fn build_sprites(
     mut draws: Query<(&mut Visibility, &ParticleDraw)>,
     fog: Option<Res<crate::game_camera::GameFog>>,
     display: Option<Res<crate::display::DisplaySettings>>,
+    mut snaps: Local<crate::interp::Pair<Vec<Snap>>>,
 ) {
     let (Some(mut sim), Some(mut mesh)) = (sim, mesh) else { return };
+    // Frames between two ticks (crate::interp): the particles at the tick before, to blend from.
+    if crate::interp::active() { snaps.feed(snapshot(&sim.sys.pool)); }
+    let blend = if crate::interp::active() { let (p, _, a) = snaps.view(); Some((p.as_slice(), a)) } else { None };
     let Some((t, proj)) = cams.iter().next() else { return };
     let (eye, [fwd, left, up]) = camera(t);
     let (tx, ty) = view_tans(proj);
@@ -503,6 +537,7 @@ fn build_sprites(
     let hw = (sim.sys.pool.hw + 1).max(0) as usize;
     let global_far12 = fog.map_or(GLOBAL_FAR12, |f| f.particle_far12);
     for i in 0..hw {
+        let born = sim.sys.pool.born[i];
         let r = &mut sim.sys.pool.recs[i];
         if r[1] & 0x80 != 0 { continue; }
         let kind = r[1] & 3;
@@ -510,7 +545,7 @@ fn build_sprites(
         if kind > 1 {
             // Kinds 2 / 3 (line, ribbon): both ends through the guard-band planes (×0.9375·4 of the view), culled when
             // both are outside the same one; near / far and the fade from the midpoint.
-            let (c1, c2) = (cam_space(rec::pos(r)), cam_space(rec::v3(r, 0x20)));
+            let (c1, c2) = (cam_space(shown(blend, i, born, rec::pos(r), false)), cam_space(shown(blend, i, born, rec::v3(r, 0x20), true)));
             let (gx, gy) = (tx * 3.75, ty * 3.75);
             let out = |c: Vec3| [c.x > gx * c.z, -c.x > gx * c.z, c.y > gy * c.z, -c.y > gy * c.z, c.z <= 0.0];
             let (o1, o2) = (out(c1), out(c2));
@@ -529,7 +564,7 @@ fn build_sprites(
             items.push(Item { bucket: ((z12 >> 10) as u32).min(1023), index: i, c: mid, alpha: m });
             continue;
         }
-        let d = Vec3::from_array(rec::pos(r)) - eye;
+        let d = Vec3::from_array(shown(blend, i, born, rec::pos(r), false)) - eye;
         let c = Vec3::new(-left.dot(d), -up.dot(d), fwd.dot(d));
         let z12 = (c.z * 4096.0) as i32;
         let near12 = ((r[9] & 0xf) as i32) << 10;
@@ -559,12 +594,13 @@ fn build_sprites(
     for g in groups.iter_mut() { g.clear(); }
     for it in &items {
         let r = &sim.sys.pool.recs[it.index];
+        let born = sim.sys.pool.born[it.index];
         let kind = r[1] & 3;
         if kind > 1 {
             // Kind 2 (L3): a one-pixel Gouraud line, untextured, ALPHA 0x44, the raw colours. Kind 3 (L4): the
             // textured ribbon p1 ± n̂·w1, p2 ± n̂·w1·k (n̂ ⟂ the ribbon and the view), colours 1, 1, 2, 2 with the
             // alphas faded, its record's blend. `it.alpha` holds the fade m (0..0x1000).
-            let (p1, p2) = (game_to_bevy(rec::pos(r)).to_array(), game_to_bevy(rec::v3(r, 0x20)).to_array());
+            let (p1, p2) = (game_to_bevy(shown(blend, it.index, born, rec::pos(r), false)).to_array(), game_to_bevy(shown(blend, it.index, born, rec::v3(r, 0x20), true)).to_array());
             let (c1, c2) = (rec::u32(r, 4), rec::u32(r, 0xc));
             let fade = |c: u32| (c & 0x00ff_ffff) | (((c >> 24) * it.alpha) >> 12).min(0xff) << 24;
             let layer = if (r[2] as u32) < n_layers { r[2] as u32 } else { 0 };
@@ -587,7 +623,7 @@ fn build_sprites(
             let (s, c) = (theta.sin() * q, theta.cos() * q);
             ([c, 1.0625 * s], [-s, 1.0625 * c])
         };
-        let centre = game_to_bevy(rec::pos(r)).to_array();
+        let centre = game_to_bevy(shown(blend, it.index, born, rec::pos(r), false)).to_array();
         let rgba = (rec::u32(r, 4) & 0x00ff_ffff) | it.alpha.min(0xff) << 24;
         let layer = if (r[2] as u32) < n_layers { r[2] as u32 } else { 0 };
         let additive = r[3] == 0x48;

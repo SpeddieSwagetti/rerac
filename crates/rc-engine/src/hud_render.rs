@@ -895,6 +895,7 @@ fn tick_and_build(
     dyn_images: Option<Res<crate::hud_images::HudImages>>,
     (display, mut images): (Option<Res<crate::display::DisplaySettings>>, ResMut<Assets<Image>>),
     (mut composites, mut static_composites, mut targets): (ResMut<Assets<HudComposite>>, ResMut<Assets<HudStaticComposite>>, Query<&mut RenderTarget>),
+    mut pair: Local<crate::interp::Pair<Vec<Prim>>>,
 ) {
     let Some(mut rt) = rt else { return };
     let rt = &mut *rt;
@@ -1035,14 +1036,64 @@ fn tick_and_build(
     }
     let dyns = dyn_images.as_deref().map_or([None; crate::hud_images::SLOTS], |d| d.rects());
     let e = rt.extra;
+    // Frames between two ticks (crate::interp): the primitives that are the same sprite as at the tick before move and
+    // fade between the two.
+    let blended: Vec<Prim>;
+    let prims: &[Prim] = if crate::interp::active() {
+        pair.feed(rt.hud2d.prims.clone());
+        let (p, c, a) = pair.view();
+        blended = blend_prims(p, c, a);
+        &blended
+    } else {
+        &rt.hud2d.prims
+    };
     // Only the meshes whose inputs changed ([`Built`]).
-    if rt.built[0].update(&rt.hud2d.prims, &rt.hud2d.fine, &rt.hud2d.add, &dyns, e) {
-        let _ = meshes.insert(&rt.mesh, build_mesh(&rt.hud2d.prims, &rt.hud2d.fine, &rt.hud2d.add, &rt.atlas_frames, &rt.atlas_fx, &dyns, e));
+    if rt.built[0].update(prims, &rt.hud2d.fine, &rt.hud2d.add, &dyns, e) {
+        let _ = meshes.insert(&rt.mesh, build_mesh(prims, &rt.hud2d.fine, &rt.hud2d.add, &rt.atlas_frames, &rt.atlas_fx, &dyns, e));
     }
     for ((m, prims), b) in rt.static_meshes.iter().zip(&hook.statics).zip(&mut rt.built[1..]) {
         if b.update(prims, &[], &[], &dyns, e) { let _ = meshes.insert(m, build_mesh(prims, &[], &[], &rt.atlas_frames, &rt.atlas_fx, &dyns, e)); }
     }
 }
+
+/// The HUD's primitives between two ticks (crate::interp). Each primitive of `curr` is matched, in order within a short
+/// window, with the primitive of `prev` that is the same sprite (texture, texels, scissor and flags); it blends from that
+/// one's corners and colour unless it moved more than [`PRIM_SNAP`] pixels (a sprite that jumped) and, for the colour,
+/// unless a channel changed by more than [`FADE_STEP`] (a blink, not a fade). A sprite whose picture changed (an
+/// animation frame, a digit) or that is new is shown as it is. The list keeps `curr`'s order and length (the fine
+/// positions and additive marks are indexes into it).
+fn blend_prims(prev: &[Prim], curr: &[Prim], a: f32) -> Vec<Prim> {
+    const WINDOW: usize = 8;
+    let same = |p: &Prim, c: &Prim| {
+        p.tex == c.tex && p.uv == c.uv && p.scissor == c.scissor && p.repeat == c.repeat && p.nearest == c.nearest && p.boxed == c.boxed && p.uv16 == c.uv16
+    };
+    let mut out = curr.to_vec();
+    let mut next = 0usize;
+    for c in out.iter_mut() {
+        let Some(k) = (next..prev.len().min(next + WINDOW)).find(|&k| same(&prev[k], &*c)) else { continue };
+        next = k + 1;
+        let p = prev[k];
+        if !(0..4).any(|v| (0..2).any(|j| (c.pos[v][j] - p.pos[v][j]).abs() > PRIM_SNAP)) {
+            for v in 0..4 {
+                for j in 0..2 { c.pos[v][j] = p.pos[v][j] + ((c.pos[v][j] - p.pos[v][j]) as f32 * a).round() as i32; }
+            }
+        }
+        let steps = (0..4).map(|s| ((p.rgba >> (8 * s)) & 0xff).abs_diff((c.rgba >> (8 * s)) & 0xff));
+        if steps.max().unwrap_or(0) <= FADE_STEP {
+            let ch = |s: u32| {
+                let (x, y) = (((p.rgba >> s) & 0xff) as f32, ((c.rgba >> s) & 0xff) as f32);
+                ((x + (y - x) * a).round() as u32) << s
+            };
+            c.rgba = ch(0) | ch(8) | ch(16) | ch(24);
+        }
+    }
+    out
+}
+
+/// A sprite that moved more than this many game pixels in one tick jumped (it is not blended).
+const PRIM_SNAP: i32 = 40;
+/// The most a colour channel changes in one tick and still fades (more is a blink).
+const FADE_STEP: u32 = 0x20;
 
 /// The HUD inputs the hero and the classes hold (rc_game::hud::Inputs: the callers the HUD sees through the state).
 fn hero_inputs(g: &mut Inputs, p: &crate::gameplay::Play) {
@@ -1208,6 +1259,28 @@ fn apply_fx_cuts(rt: Option<ResMut<HudRuntime>>, level: Res<crate::Level>, play:
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn blend_prim(x: i32, rgba: u32, u: i32) -> Prim {
+        Prim { tex: Tex::Frame(3), pos: [[x, 0], [x + 8, 0], [x, 8], [x + 8, 8]], uv: [[u, 0]; 4], rgba, scissor: [0, 511, 0, 415], repeat: false, nearest: false, boxed: false, uv16: false }
+    }
+
+    #[test]
+    fn prims_blend_between_ticks() {
+        // A slide: halfway.
+        let b = blend_prims(&[blend_prim(0, 0x8080_8080, 0)], &[blend_prim(10, 0x8080_8080, 0)], 0.5);
+        assert_eq!(b[0].pos[0], [5, 0]);
+        // A fade: the channels blend; a blink (a big step) does not.
+        assert_eq!(blend_prims(&[blend_prim(0, 0x0000_0000, 0)], &[blend_prim(0, 0x0000_0010, 0)], 0.5)[0].rgba, 0x0000_0008);
+        assert_eq!(blend_prims(&[blend_prim(0, 0x0000_0080, 0)], &[blend_prim(0, 0, 0)], 0.5)[0].rgba, 0);
+        // A jump, another picture and a new sprite are shown as they are.
+        assert_eq!(blend_prims(&[blend_prim(0, 1, 0)], &[blend_prim(100, 1, 0)], 0.5)[0].pos[0], [100, 0]);
+        assert_eq!(blend_prims(&[blend_prim(0, 1, 0)], &[blend_prim(4, 1, 9)], 0.5)[0], blend_prim(4, 1, 9));
+        let b = blend_prims(&[], &[blend_prim(4, 1, 0)], 0.5);
+        assert_eq!(b, vec![blend_prim(4, 1, 0)]);
+        // An inserted sprite does not shift the matches after it.
+        let b = blend_prims(&[blend_prim(0, 1, 0)], &[blend_prim(50, 1, 7), blend_prim(10, 1, 0)], 0.5);
+        assert_eq!((b[0].pos[0], b[1].pos[0]), ([50, 0], [5, 0]));
+    }
 
     #[test]
     fn sprite_variants_map_uv_like_the_gs_packets() {

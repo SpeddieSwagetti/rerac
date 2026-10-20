@@ -177,6 +177,9 @@ pub struct PartPool {
     pub hw: i32,
     /// gp−0x6a88: live records.
     pub count: i32,
+    /// Port-only: how many times each record has been allocated. Not game state: a renderer that blends a record
+    /// between two ticks tells a particle from the one that had its slot before.
+    pub born: Box<[u32]>,
 }
 
 impl Default for PartPool {
@@ -187,7 +190,7 @@ impl PartPool {
     /// A pool in the level-init state. The records start as zero bytes: on the PS2 the pool is placed after
     /// other level data and its previous contents are unknown (level init does not clear it).
     pub fn new() -> Self {
-        PartPool { recs: vec![[0u8; RECORD_SIZE]; POOL_RECORDS].into_boxed_slice(), bitmap: [0; 256], bitmap2: [0; 256], hint: 0, hw: -1, count: 0 }
+        PartPool { recs: vec![[0u8; RECORD_SIZE]; POOL_RECORDS].into_boxed_slice(), bitmap: [0; 256], bitmap2: [0; 256], hint: 0, hw: -1, count: 0, born: vec![0u32; POOL_RECORDS].into_boxed_slice() }
     }
 
     /// Level init 0x255958: hint 0, hw −1, count 0, both bitmaps zero; records untouched.
@@ -227,6 +230,7 @@ impl PartPool {
         self.hint = next;
         self.hw = self.hw.max(i); // pmaxw
         self.count += 1;
+        self.born[iu] = self.born[iu].wrapping_add(1);
         let r = &mut self.recs[iu];
         r[..0x10].fill(0); // sq zero, 0x0(v0)
         for _ in 0..3 { r[0x10..0x20].fill(0); } // sq zero, 0x10(v0) three times

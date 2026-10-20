@@ -17,9 +17,15 @@
 //!   A record that is new, or that moved farther than [`SNAP_DISTANCE`] in one tick (a spawn, a teleport, a camera cut
 //!   in a scene), and a joint that appears or disappears (to or from the identity), are shown at once.
 //!
-//! Not blended (drawn as of the last tick, at 60 Hz steps): particles and the effect sprites, water and sea
-//! animation, shrub sway, the HUD and the menus. They change slowly or on the 2D screen, which the port always draws
-//! per tick.
+//! * **What is rebuilt every frame from the logic's latest state** keeps its last two ticks in a [`Pair`] and is blended
+//!   where it is built: the particles' positions (crate::particle_render; a slot whose particle was born since the
+//!   tick before is shown where it is), the shadow volumes' vertices (crate::shadow_render) and the HUD's primitives
+//!   (crate::hud_render: positions and colours of the primitives that are the same sprite in both ticks, which
+//!   includes the crosshair and target markers).
+//!
+//! Not blended (drawn as of the last tick, at 60 Hz steps): the effect-callback quads (lasers, rings, the bomb
+//! reticle: crate::fx_draw), water and sea animation, shrub sway, sprite animation frames (a HUD sprite that changes
+//! its picture between ticks changes at the tick) and the menus.
 //!
 //! Inactive at 60 (`FrameRate::Fps60`) and in frame-exact runs ([`active`] is false): [`set_buffer`] is then exactly
 //! [`crate::asset_write::set_buffer`], so the picture is what it always was.
@@ -50,9 +56,43 @@ static ALPHA: AtomicU32 = AtomicU32::new(0x3f80_0000);
 
 /// Whether frames are blended between ticks.
 pub fn active() -> bool { ACTIVE.load(Relaxed) }
-fn tick_index() -> u64 { TICK.load(Relaxed) }
+pub fn tick_index() -> u64 { TICK.load(Relaxed) }
 fn frame_index() -> u64 { FRAME.load(Relaxed) }
-fn alpha() -> f32 { f32::from_bits(ALPHA.load(Relaxed)) }
+/// The part of a tick that has passed since the last one ran (the blend factor of this frame's picture).
+pub fn alpha() -> f32 { f32::from_bits(ALPHA.load(Relaxed)) }
+
+/// A value's state at the last two ticks, for what is rebuilt on the CPU every frame from the logic's latest state
+/// (particles, shadow volumes, the HUD's primitives). [`Pair::feed`] it that latest state every frame; [`Pair::view`]
+/// gives the tick before's, the latest and the blend factor. A value that did not change in a tick is the same in both.
+#[derive(Default)]
+pub struct Pair<T> {
+    prev: T,
+    curr: T,
+    tick: u64,
+}
+
+impl<T> Pair<T> {
+    /// This frame's state of the logic (as of the last tick that ran). Only while [`active`].
+    pub fn feed(&mut self, state: T) {
+        let now = tick_index();
+        if now > self.tick {
+            self.prev = std::mem::replace(&mut self.curr, state);
+            self.tick = now;
+        } else {
+            self.curr = state;
+        }
+    }
+
+    /// (the tick before's state, the last tick's, the blend factor).
+    pub fn view(&self) -> (&T, &T, f32) { (&self.prev, &self.curr, alpha()) }
+}
+
+/// `a` to `b` by `t`, unless they are farther apart than [`SNAP_DISTANCE`] (then `b`: it was placed, not moved).
+pub fn lerp3(a: [f32; 3], b: [f32; 3], t: f32) -> [f32; 3] {
+    let d: f32 = (0..3).map(|k| (b[k] - a[k]).powi(2)).sum();
+    if d > SNAP_DISTANCE * SNAP_DISTANCE { return b; }
+    std::array::from_fn(|k| a[k] + (b[k] - a[k]) * t)
+}
 
 /// Starts a frame (crate::frame_pace, in `First`): the ticks it will run, the part of a tick left over after them
 /// (the blend factor of the picture), and whether blending is on.
