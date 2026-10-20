@@ -460,33 +460,54 @@ impl UiMaterial for HudComposite {
     }
 }
 
-/// The GS blend `(Cs − Cd)·As + Cd` with As above 1 (a fragment alpha over 0x80: the look stance's marker
-/// `0xff917267`, `0x20fb60`): `Cs·As − Cd·(As − 1)`, the frame under it subtracted. The layer keeps such alphas (a float
-/// target); the frame's blend clamps its factors to [0, 1], so [`HudComposite`] takes the layer's pixels up to 1 and
-/// this second node, over the same image, the ones above: colour `Cs·As`, alpha `As − 1`, blended `src − dst·srcA`.
-/// [`HudComposite`] drew them opaque (`Cs`): the wrench's glassy blue reticle came out as a flat grey one.
-const OVER_ONE_BLEND: BlendState = BlendState {
-    color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::SrcAlpha, operation: BlendOperation::Subtract },
+/// The GS blend `(Cs − Cd)·As + Cd` with As above 1 (a fragment alpha over 0x80: the guns' markers `0xff0fff0f`, the
+/// look stance's `0xff917267`, `0x20fb60`): `P − Cd·k` with P = `Cs·As` (up to 2) and k = `As − 1`, clamped once at the
+/// end. The layer keeps such alphas (a float target); the frame's 8-bit target clamps a fragment to 1 before its
+/// blend, so [`HudComposite`] takes the layer's pixels up to 1 and two more nodes over the same image the ones above
+/// (hud.wgsl `composite_over_sub` / `composite_over_out`): X = clamp(Cd·k − max(P − 1, 0)) ([`OVER_SUB_BLEND`]), then
+/// clamp(min(P, 1) − X) ([`OVER_OUT_BLEND`]). [`HudComposite`] alone drew them opaque (`Cs`: the wrench's glassy reticle
+/// a flat grey one); one node with P clamped first gave `1 − Cd·k` (the green markers a dark negative of the frame).
+const OVER_SUB_BLEND: BlendState = BlendState {
+    color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::SrcAlpha, operation: BlendOperation::ReverseSubtract },
     alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
 };
 
-/// The HUD layer's pixels whose alpha is above 1 ([`OVER_ONE_BLEND`]); a child of each [`HudComposite`] node, same image.
+/// The second node's blend: `src − dst` ([`OVER_SUB_BLEND`]).
+const OVER_OUT_BLEND: BlendState = BlendState {
+    color: BlendComponent { src_factor: BlendFactor::One, dst_factor: BlendFactor::One, operation: BlendOperation::Subtract },
+    alpha: BlendComponent { src_factor: BlendFactor::Zero, dst_factor: BlendFactor::One, operation: BlendOperation::Add },
+};
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct HudCompositeOverKey {
+    out: bool,
+}
+
+impl From<&HudCompositeOver> for HudCompositeOverKey {
+    fn from(m: &HudCompositeOver) -> Self { HudCompositeOverKey { out: m.out } }
+}
+
+/// The HUD layer's pixels whose alpha is above 1 ([`OVER_SUB_BLEND`]); two children of each [`HudComposite`] node over
+/// the same image, `out` false then true.
 #[derive(Asset, TypePath, AsBindGroup, Debug, Clone)]
+#[bind_group_data(HudCompositeOverKey)]
 pub struct HudCompositeOver {
     #[texture(0)]
     pub image: Handle<Image>,
     #[uniform(1)]
     pub scaling: Vec4,
+    pub out: bool,
 }
 
 impl UiMaterial for HudCompositeOver {
     fn fragment_shader() -> ShaderRef { SHADER_PATH.into() }
 
-    fn specialize(descriptor: &mut RenderPipelineDescriptor, _key: UiMaterialKey<Self>) {
+    fn specialize(descriptor: &mut RenderPipelineDescriptor, key: UiMaterialKey<Self>) {
+        let (entry, blend) = if key.bind_group_data.out { ("composite_over_out", OVER_OUT_BLEND) } else { ("composite_over_sub", OVER_SUB_BLEND) };
         if let Some(f) = descriptor.fragment.as_mut() {
-            f.entry_point = Some("composite_over".into());
+            f.entry_point = Some(entry.into());
             f.shader_defs.push(ShaderDefVal::Bool("HUD_COMPOSITE".into(), true));
-            for t in f.targets.iter_mut().flatten() { t.blend = Some(OVER_ONE_BLEND); }
+            for t in f.targets.iter_mut().flatten() { t.blend = Some(blend); }
         }
         descriptor.vertex.shader_defs.push(ShaderDefVal::Bool("HUD_COMPOSITE".into(), true));
     }
@@ -835,8 +856,10 @@ fn setup(
     // On the frame's 4:3 box (crate::display: in 16:9 the 512×416 screen is centred, the world widens around it).
     // The whole frame (crate::display): the 512×416 screen in its middle, wider in 16:9 ([`HudRuntime::extra`]).
     let hud_node = commands.spawn((full(), MaterialNode(composites.add(HudComposite { image: target.clone(), scaling: sc })), GlobalZIndex(i32::MAX), HudCompositeNode, Name::new("hud composite"))).id();
-    // Its pixels with an alpha above 1, right after it ([`HudCompositeOver`]).
-    commands.spawn((full(), MaterialNode(over_composites.add(HudCompositeOver { image: target.clone(), scaling: sc })), ZIndex(-1), ChildOf(hud_node), Name::new("hud composite (alpha above 1)")));
+    // Its pixels with an alpha above 1, right after it, in two nodes in this order ([`HudCompositeOver`]).
+    for (out, z) in [(false, -2), (true, -1)] {
+        commands.spawn((full(), MaterialNode(over_composites.add(HudCompositeOver { image: target.clone(), scaling: sc, out })), ZIndex(z), ChildOf(hud_node), Name::new("hud composite (alpha above 1)")));
+    }
     // The 512×416 screen's box inside it: the parent of the canvases composed with the HUD (crate::screen_canvas).
     commands.spawn((full(), crate::display::UiBoxed, HudBoxNode, ChildOf(hud_node), Name::new("hud box")));
     // The static layer: its own 512×416 target, three meshes in pass order (Transparent2d sorts by z), a node over

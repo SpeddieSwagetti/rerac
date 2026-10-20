@@ -142,7 +142,7 @@ fn composite(in: UiVertexOutput) -> @location(0) vec4<f32> {
     // blend's result; a pixel only the ALPHA_1 0x48 draws touched (coverage 0: the vehicle HUDs' pips, crosshairs and
     // lock markers) adds its colour, as the GS adds it onto the frame (in linear light: exact over black). Discarding
     // those dropped every additive draw outside the HUD's covered areas.
-    // Above 1: `composite_over` (the GS blend with As > 1 subtracts the frame).
+    // Above 1: `composite_over_sub` / `composite_over_out` (the GS blend with As > 1 subtracts the frame).
     if c.a > 1.0 {
         discard;
     }
@@ -158,16 +158,31 @@ fn composite(in: UiVertexOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(to_linear(straight) * a, a);
 }
 
-// The layer's pixels with an alpha above 1 (hud_render::HudCompositeOver, blend `src − dst·srcA`): the GS's
-// `(Cs − Cd)·As + Cd` = `Cs·As − Cd·(As − 1)` with As up to 0xff / 0x80 (the look stance's marker 0xff917267).
-@fragment
-fn composite_over(in: UiVertexOutput) -> @location(0) vec4<f32> {
+// The layer's pixels with an alpha above 1 (hud_render::HudCompositeOver): the GS's `(Cs − Cd)·As + Cd` =
+// `P − Cd·k` (P = Cs·As, k = As − 1; As up to 0xff / 0x80: the guns' markers 0xff0fff0f, the look stance's
+// 0xff917267), clamped once at the end. P reaches 2 and the frame's 8-bit target clamps a fragment to 1 before the
+// blend, so two nodes: `composite_over_sub` leaves X = clamp(Cd·k − max(P − 1, 0)) (blend `dst·srcA − src`), then
+// `composite_over_out` writes clamp(min(P, 1) − X) (blend `src − dst`) — P − Cd·k on either side of 1. One node
+// with P clamped first gave `1 − Cd·k`: the green markers' solid middle came out as a dark negative of the frame.
+fn over_parts(in: UiVertexOutput) -> vec4<f32> {
     let c = sample_layer(in.uv);
     if c.a <= 1.0 {
         discard;
     }
     let straight = clamp(c.rgb / c.a, vec3<f32>(0.0), vec3<f32>(1.0));
-    return vec4<f32>(min(to_linear(straight) * c.a, vec3<f32>(1.0)), c.a - 1.0);
+    return vec4<f32>(to_linear(straight) * c.a, min(c.a - 1.0, 1.0));
+}
+
+@fragment
+fn composite_over_sub(in: UiVertexOutput) -> @location(0) vec4<f32> {
+    let p = over_parts(in);
+    return vec4<f32>(max(p.rgb - vec3<f32>(1.0), vec3<f32>(0.0)), p.a);
+}
+
+@fragment
+fn composite_over_out(in: UiVertexOutput) -> @location(0) vec4<f32> {
+    let p = over_parts(in);
+    return vec4<f32>(min(p.rgb, vec3<f32>(1.0)), 0.0);
 }
 
 // The static layer (hud_render::HudStaticComposite, premultiplied blend): its display-space premultiplied colour in
