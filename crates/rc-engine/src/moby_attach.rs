@@ -735,8 +735,8 @@ fn upload(
             if let Ok(mut tr) = transforms.get_mut(e) { *tr = t; }
         }
     }
-    crate::asset_write::set_buffer(&mut buffers, &a.extra.palette, &palette);
-    crate::asset_write::set_buffer(&mut buffers, &a.extra.instances, &records);
+    crate::interp::set_buffer(&mut buffers, &a.extra.palette, &palette, crate::interp::Kind::Palette);
+    crate::interp::set_buffer(&mut buffers, &a.extra.instances, &records, crate::interp::Kind::Record);
 }
 
 // ---------------------------------------------------------------------------------------------------------------

@@ -8,11 +8,15 @@
 //! | [`Hud`] | Original (the 512×416 HUD scaled up smoothly, as the TV showed it), Sharp pixels | crate::hud_render composite |
 //! | [`Textures`] | Original (the GS mip rule, one level per pixel), Smooth (blended levels), Sharp (the GPU's own choice, anisotropic) | the world shaders, through crate::game_camera's shared fog buffer |
 //! | [`Detail`] | Original (the game's LOD distances), Far (×2), Farther (×4), Maximum (the full model whenever it is drawn) | crate::tfrag_lod, crate::tie_lod, crate::moby_render, crate::shrub_render (drawing only: the game logic keeps its own decisions) |
+//! | [`FrameRate`] | 60 (the game's own rate, one drawn frame per logic tick), 120, 180, 240, Uncapped | crate::frame_pace (limiter, present mode, ticks from the clock), crate::interp (the drawn frames between two ticks) |
+//!
+//! [`FrameRate`] is not part of a preset (a preset keeps it): it is a property of the machine, not of the look. The
+//! logic always runs at its own 60 Hz tick whatever the frame rate, so physics, animation and timers keep their speed.
 //!
 //! Persisted in the port settings file (`crate::render_settings::save_key`); `RC_HUD`-style switches are not used here
 //! (`RC_HUD=0` already hides the HUD): `RC_GFX_ANTI_ALIASING`, `RC_GFX_HUD`, `RC_GFX_TEXTURES`, `RC_GFX_DETAIL` (the
-//! keys below), `RC_MSAA=0|2|4|8` (Anti-aliasing Off or that multisampling) and `RC_GFX_PRESET=original|enhanced`
-//! override the file at start.
+//! keys below), `RC_MSAA=0|2|4|8` (Anti-aliasing Off or that multisampling), `RC_FPS=60|120|180|240|uncapped` (the frame rate;
+//! `0` is uncapped) and `RC_GFX_PRESET=original|enhanced` override the file at start.
 
 use bevy::prelude::*;
 
@@ -157,7 +161,60 @@ impl GfxOption for Detail {
     }
 }
 
-/// A preset: a value for every option.
+/// How many frames a second the port draws. The logic tick stays at the game's 60 Hz in every case
+/// (crate::frame_pace): a higher rate draws more frames between two ticks, from poses blended between them
+/// (crate::interp).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum FrameRate {
+    /// One frame per tick, as the PS2 drew (and, on a ~60 Hz display, paced by vsync).
+    #[default]
+    Fps60,
+    Fps120,
+    Fps180,
+    Fps240,
+    /// No limit: as many frames as the machine draws, without vsync.
+    Uncapped,
+}
+
+impl FrameRate {
+    /// The frame limit in Hz (`None`: no limit).
+    pub fn cap_hz(self) -> Option<f64> {
+        match self {
+            FrameRate::Fps60 => Some(60.0),
+            FrameRate::Fps120 => Some(120.0),
+            FrameRate::Fps180 => Some(180.0),
+            FrameRate::Fps240 => Some(240.0),
+            FrameRate::Uncapped => None,
+        }
+    }
+
+    /// Whether frames between two ticks are drawn from blended poses (everything above the game's own 60).
+    pub fn interpolates(self) -> bool { self != FrameRate::Fps60 }
+
+    /// The `RC_FPS` switch: a settings key, or `0` for uncapped.
+    pub fn from_env(v: &str) -> Option<Self> {
+        match v.trim() {
+            "0" => Some(FrameRate::Uncapped),
+            v => Self::parse(&v.to_ascii_lowercase()),
+        }
+    }
+}
+
+impl GfxOption for FrameRate {
+    const ALL: &'static [Self] = &[FrameRate::Fps60, FrameRate::Fps120, FrameRate::Fps180, FrameRate::Fps240, FrameRate::Uncapped];
+    const KEY: &'static str = "frame_rate";
+    fn key(self) -> &'static str {
+        match self {
+            FrameRate::Fps60 => "60",
+            FrameRate::Fps120 => "120",
+            FrameRate::Fps180 => "180",
+            FrameRate::Fps240 => "240",
+            FrameRate::Uncapped => "uncapped",
+        }
+    }
+}
+
+/// A preset: a value for every option (but the frame rate, which a preset keeps).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Preset {
     Original,
@@ -179,15 +236,17 @@ pub struct GraphicsSettings {
     pub hud: Hud,
     pub textures: Textures,
     pub detail: Detail,
+    pub frame_rate: FrameRate,
 }
 
 impl GraphicsSettings {
     /// The options of a preset (`Custom` keeps `self`).
     pub fn with_preset(self, p: Preset) -> Self {
+        let frame_rate = self.frame_rate;
         match p {
-            Preset::Original => GraphicsSettings::default(),
+            Preset::Original => GraphicsSettings { frame_rate, ..GraphicsSettings::default() },
             // 4x: the best count every GPU offers (crate::render_settings clamps a count a device lacks).
-            Preset::Enhanced => GraphicsSettings { aa: AntiAliasing::X4, hud: Hud::Original, textures: Textures::Smooth, detail: Detail::Far },
+            Preset::Enhanced => GraphicsSettings { aa: AntiAliasing::X4, hud: Hud::Original, textures: Textures::Smooth, detail: Detail::Far, frame_rate },
             Preset::Custom => self,
         }
     }
@@ -211,12 +270,16 @@ impl GraphicsSettings {
             s.textures = file_value(s.textures);
             s.detail = file_value(s.detail);
         }
+        // The frame rate is not part of a preset: the file's value applies under `RC_GFX_PRESET` too.
+        s.frame_rate = file_value(s.frame_rate);
         s.aa = env_value(s.aa);
         // The older switch: `RC_MSAA=0|2|4|8` (0 = Off).
         if let Ok(v) = std::env::var("RC_MSAA") { s.aa = AntiAliasing::from_samples(v.trim().parse().unwrap_or(0)); }
         s.hud = env_value(s.hud);
         s.textures = env_value(s.textures);
         s.detail = env_value(s.detail);
+        s.frame_rate = env_value(s.frame_rate);
+        if let Some(r) = std::env::var("RC_FPS").ok().as_deref().and_then(FrameRate::from_env) { s.frame_rate = r; }
         s
     }
 
@@ -226,6 +289,7 @@ impl GraphicsSettings {
         save(self.hud);
         save(self.textures);
         save(self.detail);
+        save(self.frame_rate);
     }
 }
 
@@ -288,11 +352,31 @@ mod tests {
     }
 
     #[test]
+    fn frame_rate_is_not_part_of_a_preset() {
+        let fast = GraphicsSettings { frame_rate: FrameRate::Fps240, ..GraphicsSettings::default() };
+        assert_eq!(fast.preset(), Preset::Original);
+        assert_eq!(fast.with_preset(Preset::Enhanced).frame_rate, FrameRate::Fps240);
+        assert_eq!(fast.with_preset(Preset::Enhanced).preset(), Preset::Enhanced);
+        assert_eq!(fast.with_preset(Preset::Original), fast);
+    }
+
+    #[test]
+    fn frame_rate_switch_and_limits() {
+        assert_eq!(FrameRate::from_env("0"), Some(FrameRate::Uncapped));
+        assert_eq!(FrameRate::from_env(" Uncapped "), Some(FrameRate::Uncapped));
+        assert_eq!(FrameRate::from_env("144"), None);
+        assert_eq!(FrameRate::Fps180.cap_hz(), Some(180.0));
+        assert_eq!(FrameRate::Uncapped.cap_hz(), None);
+        assert!(!FrameRate::default().interpolates() && FrameRate::Fps120.interpolates());
+    }
+
+    #[test]
     fn keys_parse_back() {
         for &v in AntiAliasing::ALL { assert_eq!(AntiAliasing::parse(v.key()), Some(v)); }
         for &v in Hud::ALL { assert_eq!(Hud::parse(v.key()), Some(v)); }
         for &v in Textures::ALL { assert_eq!(Textures::parse(v.key()), Some(v)); }
         for &v in Detail::ALL { assert_eq!(Detail::parse(v.key()), Some(v)); }
+        for &v in FrameRate::ALL { assert_eq!(FrameRate::parse(v.key()), Some(v)); }
         assert_eq!(Detail::from_index(9), Detail::Original);
         assert_eq!(AntiAliasing::from_samples(0), AntiAliasing::Off);
         assert_eq!(AntiAliasing::from_samples(4).samples(), 4);

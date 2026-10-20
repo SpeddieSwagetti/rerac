@@ -1,5 +1,6 @@
 //! **Port-only** (not in the game): the "Port Options" page, for settings the PS2 never had (the graphics options and
-//! their preset, anti-aliasing, switching the moby shadows off, the aspect, the render resolution and fullscreen).
+//! their preset, anti-aliasing, switching the moby shadows off, the aspect, the render resolution, fullscreen and the
+//! frame rate).
 //! Spec: docs/plan/menus.md "Port-only settings"; the graphics rows: docs/plan/graphics_options.md (every row's first
 //! value is the game's own look).
 //!
@@ -102,6 +103,12 @@ pub mod text {
     pub const FAR: i32 = -0x191;
     pub const FARTHER: i32 = -0x192;
     pub const MAXIMUM: i32 = -0x193;
+    pub const FRAME_RATE: i32 = -0x1a0;
+    pub const FPS_60: i32 = -0x1a1;
+    pub const FPS_120: i32 = -0x1a2;
+    pub const FPS_180: i32 = -0x1a3;
+    pub const FPS_240: i32 = -0x1a4;
+    pub const UNCAPPED: i32 = -0x1a5;
     /// The game's own "on" / "off" (20314 / 20315, the Subtitles / HelpDesk toggle values).
     pub const ON: i32 = 20314;
     pub const OFF: i32 = 20315;
@@ -140,6 +147,12 @@ pub mod text {
             FAR => b"Far",
             FARTHER => b"Farther",
             MAXIMUM => b"Maximum",
+            FRAME_RATE => b"Frame rate",
+            FPS_60 => b"60",
+            FPS_120 => b"120",
+            FPS_180 => b"180",
+            FPS_240 => b"240",
+            UNCAPPED => b"Uncapped",
             _ => return None,
         })
     }
@@ -169,6 +182,9 @@ pub enum Setting {
     /// How far away models keep their full detail: value 0 Original (the game's distances), 1 Far (×2), 2 Farther (×4),
     /// 3 Maximum (always).
     Detail,
+    /// The frames drawn a second: value 0 the game's own 60 (one frame per logic tick), 1 120, 2 180, 3 240, 4 uncapped.
+    /// The logic always ticks at 60 Hz; the frames above that are drawn between two ticks (the engine's crate::interp).
+    FrameRate,
 }
 
 /// One row: the setting, its label and the ids of its values (✕ cycles through them).
@@ -190,6 +206,7 @@ pub const ENTRIES: &[Entry] = &[
     Entry { setting: Setting::Aspect, label: text::ASPECT, values: &[text::ASPECT_4_3, text::ASPECT_16_10, text::ASPECT_16_9] },
     Entry { setting: Setting::Resolution, label: text::RESOLUTION, values: &[text::RES_WINDOW, text::RES_416, text::RES_720, text::RES_1080, text::RES_1440, text::RES_2160] },
     Entry { setting: Setting::Fullscreen, label: text::FULLSCREEN, values: &[text::OFF, text::ON] },
+    Entry { setting: Setting::FrameRate, label: text::FRAME_RATE, values: &[text::FPS_60, text::FPS_120, text::FPS_180, text::FPS_240, text::UNCAPPED] },
 ];
 
 /// The list's run-time state: cursor, each row's value index and each row's selectable values (bit k = value k;

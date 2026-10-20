@@ -1,7 +1,15 @@
-//! **Port-only: frame pacing.** The game runs at 60 Hz (one logic tick per NTSC field) and the port draws no frame
-//! between two ticks (nothing is interpolated), so a frame drawn without a tick is the previous picture again, and a
-//! frame that runs two ticks skips one: either shows as a stutter. This module keeps one tick per drawn frame and
-//! draws at most 60 frames a second.
+//! **Port-only: frame pacing.** The game runs at 60 Hz (one logic tick per NTSC field), and nothing in it is written
+//! for another rate, so the tick stays 60 Hz at every frame rate: physics, animation and timers run at 1.0x whatever
+//! the frame rate is. At the game's own rate (the default, `FrameRate::Fps60`) the port draws no frame between two
+//! ticks, so a frame drawn without a tick is the previous picture again, and a frame that runs two ticks skips one:
+//! either shows as a stutter. This module keeps one tick per drawn frame and draws at most 60 frames a second.
+//!
+//! **Frame rate option** (crate::graphics `FrameRate`: 60, 120, 180, 240, Uncapped; Port Options, `RC_FPS`): above 60
+//! the frames come from the clock and the ticks from the frames. Each frame runs the whole ticks that have passed since
+//! the last one (the plain floor, the remainder carried), usually none or one, and crate::interp draws the frame from
+//! the poses between the last two ticks, `alpha` = that remainder. The limiter then waits for 1/N s (Uncapped: not at
+//! all), and the window presents without vsync (a vsync that is not the rate asked for would beat against it); at 60
+//! the display's own rhythm paces as below. A stall of more than [`MAX_STEPS`] ticks is dropped in every mode.
 //!
 //! * **Ticks** (`First`, before Bevy's time update): each frame advances `TimeUpdateStrategy::FixedTimesteps(n)`
 //!   ticks, `n` from the real time since the last frame start counted in ticks with a remainder that carries over:
@@ -20,7 +28,8 @@
 
 use bevy::prelude::*;
 use bevy::time::TimeUpdateStrategy;
-use bevy::window::{Monitor, PrimaryMonitor};
+use bevy::window::{Monitor, PresentMode, PrimaryMonitor, PrimaryWindow};
+use crate::graphics::{FrameRate, GraphicsSettings};
 use std::time::{Duration, Instant};
 
 /// Ticks a frame may run at most (a longer stall's time is dropped).
@@ -37,6 +46,8 @@ struct Pace {
     last: Option<Instant>,
     /// Elapsed ticks not yet run.
     acc: f64,
+    /// The last frame was one of the blended modes (frame rate above 60).
+    blended: bool,
     /// The limiter's next deadline and its period.
     next: Option<Instant>,
     period: Option<Duration>,
@@ -50,37 +61,67 @@ impl Plugin for FramePacePlugin {
             // Frame-exact runs keep their one tick per update; `RC_FRAME_CAP=1` still limits them to 60 frames a second
             // (a capture run otherwise renders as fast as the machine allows).
             if env_is("RC_FRAME_CAP", "1") {
-                app.insert_resource(Pace { limit: true, last: None, acc: 0.0, next: None, period: None }).add_systems(Last, wait);
+                app.insert_resource(Pace { limit: true, last: None, acc: 0.0, blended: false, next: None, period: None }).add_systems(Last, wait);
             }
             return;
         }
         let limit = !env_is("RC_FRAME_CAP", "0") && !env_is("RC_NOVSYNC", "1");
-        app.insert_resource(Pace { limit, last: None, acc: 0.0, next: None, period: None })
+        app.insert_resource(Pace { limit, last: None, acc: 0.0, blended: false, next: None, period: None })
             .insert_resource(TimeUpdateStrategy::FixedTimesteps(1))
-            .add_systems(First, steps.before(bevy::time::TimeSystems));
+            .add_systems(First, steps.before(bevy::time::TimeSystems))
+            .add_systems(Update, present_mode);
         if limit { app.add_systems(Last, wait); }
     }
 }
 
-/// This frame's ticks (module docs).
-fn steps(mut pace: ResMut<Pace>, mut strategy: ResMut<TimeUpdateStrategy>) {
+/// One frame's ticks and the remainder carried over (module docs): `elapsed` ticks of real time have passed since the
+/// last frame start. `rounding` (the limiter at the game's own rate): a frame a little early or late is still one tick,
+/// the remainder within ±½. Else the plain floor, the remainder in 0..1: the part of a tick the frame is past the last
+/// one that ran.
+fn advance(acc: f64, elapsed: f64, rounding: bool) -> (u32, f64) {
+    let acc = acc + elapsed;
+    let n = if rounding {
+        let n = acc.round().max(0.0);
+        if n == 0.0 && acc > 0.25 { 1.0 } else { n }
+    } else {
+        acc.floor().max(0.0)
+    };
+    let n = n.min(MAX_STEPS as f64);
+    let rest = acc - n;
+    (n as u32, if rounding { rest.clamp(-0.5, 0.5) } else { rest.clamp(0.0, 1.0) })
+}
+
+/// This frame's ticks (module docs), and what crate::interp needs to draw it.
+fn steps(mut pace: ResMut<Pace>, mut strategy: ResMut<TimeUpdateStrategy>, gfx: Option<Res<GraphicsSettings>>) {
+    let blended = gfx.is_some_and(|g| g.frame_rate.interpolates());
     let now = Instant::now();
     let Some(last) = pace.last.replace(now) else {
         *strategy = TimeUpdateStrategy::FixedTimesteps(1);
+        crate::interp::begin_frame(1, 1.0, false);
         return;
     };
-    pace.acc += (now - last).as_secs_f64() / TICK;
-    let n = if pace.limit {
-        let mut n = pace.acc.round().max(0.0);
-        if n == 0.0 && pace.acc > 0.25 { n = 1.0; }
-        n
-    } else {
-        pace.acc.floor()
-    };
-    let n = n.min(MAX_STEPS as f64);
-    pace.acc -= n;
-    pace.acc = if pace.limit { pace.acc.clamp(-0.5, 0.5) } else { pace.acc.clamp(0.0, 1.0) };
-    *strategy = TimeUpdateStrategy::FixedTimesteps(n as u32);
+    // The two modes keep the remainder in different ranges: start the other one from none.
+    if pace.blended != blended {
+        pace.blended = blended;
+        pace.acc = 0.0;
+    }
+    let (n, rest) = advance(pace.acc, (now - last).as_secs_f64() / TICK, pace.limit && !blended);
+    pace.acc = rest;
+    *strategy = TimeUpdateStrategy::FixedTimesteps(n);
+    // At the game's own rate every frame shows the last tick as it is.
+    crate::interp::begin_frame(n, if blended { rest as f32 } else { 1.0 }, blended);
+}
+
+/// The window's present mode follows the frame rate: vsync at the game's own 60, none above (the limiter or the
+/// machine sets the rate; `RC_NOVSYNC=1` presents without vsync at 60 too).
+fn present_mode(gfx: Option<Res<GraphicsSettings>>, mut windows: Query<&mut Window, With<PrimaryWindow>>, mut applied: Local<Option<PresentMode>>) {
+    let rate = gfx.map_or(FrameRate::Fps60, |g| g.frame_rate);
+    let want = if rate.interpolates() || env_is("RC_NOVSYNC", "1") { PresentMode::AutoNoVsync } else { PresentMode::AutoVsync };
+    if *applied == Some(want) || windows.is_empty() { return; }
+    for mut w in &mut windows {
+        if w.present_mode != want { w.present_mode = want; }
+    }
+    *applied = Some(want);
 }
 
 /// The limiter's period for a monitor of `mhz` millihertz (module docs): None at ~60 Hz.
@@ -96,8 +137,11 @@ fn period_for(mhz: Option<u32>) -> Option<Duration> {
 }
 
 /// The limiter (module docs).
-fn wait(mut pace: ResMut<Pace>, monitors: Query<&Monitor, With<PrimaryMonitor>>) {
-    let period = period_for(monitors.iter().next().and_then(|m| m.refresh_rate_millihertz));
+fn wait(mut pace: ResMut<Pace>, monitors: Query<&Monitor, With<PrimaryMonitor>>, gfx: Option<Res<GraphicsSettings>>) {
+    let period = match gfx.map_or(FrameRate::Fps60, |g| g.frame_rate) {
+        FrameRate::Fps60 => period_for(monitors.iter().next().and_then(|m| m.refresh_rate_millihertz)),
+        rate => rate.cap_hz().map(|hz| Duration::from_secs_f64(1.0 / hz)),
+    };
     if period != pace.period {
         pace.period = period;
         pace.next = None;
@@ -118,6 +162,57 @@ fn wait(mut pace: ResMut<Pace>, monitors: Query<&Monitor, With<PrimaryMonitor>>)
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Runs frames of `dt` ticks each; the ticks run and the last remainder.
+    fn run(frames: usize, dt: f64, rounding: bool) -> (u32, f64) {
+        let (mut acc, mut ticks) = (0.0, 0);
+        for _ in 0..frames {
+            let (n, rest) = advance(acc, dt, rounding);
+            (acc, ticks) = (rest, ticks + n);
+        }
+        (ticks, acc)
+    }
+
+    #[test]
+    fn the_tick_keeps_its_speed_at_every_frame_rate() {
+        // One second of frames at 60, 120, 180, 240 and 1000 a second: 60 ticks (±1 for the remainder), in the floor
+        // mode of the blended rates.
+        for fps in [60.0, 120.0, 180.0, 240.0, 1000.0] {
+            let (ticks, rest) = run(fps as usize, 60.0 / fps, false);
+            assert!((59..=60).contains(&ticks), "{fps} fps: {ticks} ticks");
+            assert!((0.0..1.0).contains(&rest));
+            assert!((ticks as f64 + rest - 60.0).abs() < 1e-6, "{fps} fps: no time is lost");
+        }
+    }
+
+    #[test]
+    fn frames_between_ticks_carry_the_remainder() {
+        // 240 fps: three frames without a tick, the fourth runs it; the remainder is the blend factor.
+        let mut acc = 0.0;
+        for k in 1..=4 {
+            let (n, rest) = advance(acc, 0.25, false);
+            assert_eq!(n, (k == 4) as u32);
+            assert!((rest - if k == 4 { 0.0 } else { 0.25 * k as f64 }).abs() < 1e-9);
+            acc = rest;
+        }
+        // A frame 1.5 ticks long runs one and keeps the half.
+        assert_eq!(advance(0.0, 1.5, false), (1, 0.5));
+    }
+
+    #[test]
+    fn a_stall_drops_its_time() {
+        assert_eq!(advance(0.0, 30.0, false), (MAX_STEPS, 1.0));
+        assert_eq!(advance(0.0, 30.0, true), (MAX_STEPS, 0.5));
+    }
+
+    #[test]
+    fn the_game_rate_still_rounds() {
+        // At 60 with the limiter a frame a little early or late is one tick.
+        assert_eq!(advance(0.0, 0.8, true).0, 1);
+        assert_eq!(advance(0.0, 1.2, true).0, 1);
+        assert_eq!(advance(0.0, 0.3, true).0, 1);
+        assert_eq!(advance(0.0, 0.2, true).0, 0);
+    }
 
     #[test]
     fn the_period_follows_the_display() {

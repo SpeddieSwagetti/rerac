@@ -1525,7 +1525,7 @@ pub fn update_moby_occlusion(
         s.last_lod = lod_bytes;
     }
     if std::mem::take(&mut s.records_dirty) {
-        crate::asset_write::set_buffer(&mut buffers, &s.instances, &s.records);
+        crate::interp::set_buffer(&mut buffers, &s.instances, &s.records, crate::interp::Kind::Record);
     }
     if let Some(mut o) = occl {
         o.mobys = crate::occlusion::CullCounts { occluded: hist[0], culled: hist[1] + hist[2] + hist[3], drawn: hist[4..8].iter().sum() };

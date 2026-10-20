@@ -144,9 +144,9 @@ fn draw(
         }
     }
     if rec_changed {
-        crate::asset_write::set_buffer(&mut buffers, &g.extra.instances, &g.records);
+        crate::interp::set_buffer(&mut buffers, &g.extra.instances, &g.records, crate::interp::Kind::Record);
     }
     if pal_changed {
-        crate::asset_write::set_buffer(&mut buffers, &g.extra.palette, &g.palette);
+        crate::interp::set_buffer(&mut buffers, &g.extra.palette, &g.palette, crate::interp::Kind::Palette);
     }
 }

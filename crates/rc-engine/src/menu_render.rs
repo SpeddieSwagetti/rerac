@@ -532,12 +532,15 @@ fn sync_graphics_rows(menu: &mut PageMenu, g: &crate::graphics::GraphicsSettings
     menu.set_port_value(Setting::Hud, g.hud.index());
     menu.set_port_value(Setting::Textures, g.textures.index());
     menu.set_port_value(Setting::Detail, g.detail.index());
+    menu.set_port_value(Setting::FrameRate, g.frame_rate.index());
 }
 
 /// The graphics rows back into the settings after the menu tick: a new preset sets every option; otherwise each row is
 /// read. A change is saved to the port settings file.
 fn read_graphics_rows(menu: &PageMenu, g: &mut crate::graphics::GraphicsSettings, before: &crate::graphics::GraphicsSettings, frame: u64) {
-    use crate::graphics::{AntiAliasing, Detail, GfxOption, Hud, Preset, Textures};
+    use crate::graphics::{AntiAliasing, Detail, FrameRate, GfxOption, Hud, Preset, Textures};
+    // The frame rate is not part of a preset (a preset keeps it): its row is read whatever the preset row did.
+    let frame_rate = menu.port_value(Setting::FrameRate).map(FrameRate::from_index);
     let preset = menu.port_value(Setting::Preset).map(Preset::from_index);
     match preset {
         Some(p) if p != Preset::Custom && p != before.preset() => *g = before.with_preset(p),
@@ -548,6 +551,7 @@ fn read_graphics_rows(menu: &PageMenu, g: &mut crate::graphics::GraphicsSettings
             if let Some(v) = menu.port_value(Setting::Detail) { g.detail = Detail::from_index(v); }
         }
     }
+    if let Some(r) = frame_rate { g.frame_rate = r; }
     if *g != *before {
         println!("menus: frame {frame}: Port Options: graphics {g:?} ({:?})", g.preset());
         g.save();

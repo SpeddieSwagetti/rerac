@@ -46,6 +46,7 @@ mod hud_render;
 mod hud_images;
 mod input_map;
 mod interact_render;
+mod interp;
 mod level_load;
 mod level_switch;
 mod media_render;
@@ -179,6 +180,7 @@ fn main() -> anyhow::Result<()> {
     .add_plugins(determinism::DeterminismPlugin)
     // One game tick per drawn frame, at most 60 frames a second (crate::frame_pace).
     .add_plugins(frame_pace::FramePacePlugin)
+    .add_plugins(interp::InterpPlugin)
     .add_plugins(no_clusters::NoClustersPlugin)
     .add_plugins(graphics::GraphicsPlugin)
     .add_plugins(draw_stats::DrawStatsPlugin)
