@@ -369,7 +369,10 @@ fn bomb_aim(hero: &mut Hero, table: &mut MobyTable, env: &ItemEnv, b: MobyId) ->
             (Some(c), Some(coll)) => line_world(coll, from_f32x3(c), from_f32x3(p), targeting::BOMB_GLOVE.los_flags).is_none(),
             _ => true,
         };
-        if let Some(t) = targeting::aim_search(&targeting::BOMB_GLOVE, table, env.targets, launch, yawf, clear) {
+        // The search's first reference is the launch point's yaw (the facing turned by 0xbeb953df, −20.7°: the
+        // glove hand), not the facing: the cone leans right.
+        let reference = crate::moby_update::creature::add_rot(yawf, f32::from_bits(0xbeb9_53df));
+        if let Some(t) = targeting::aim_search(&targeting::BOMB_GLOVE, table, env.targets, launch, reference, clear) {
             target = t.point;
             hero.weapons.aim = Some(t.id);
             let m = &table.mobys[t.id];

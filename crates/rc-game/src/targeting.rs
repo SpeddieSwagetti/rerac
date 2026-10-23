@@ -13,7 +13,7 @@
 //!
 //! | reader | what it picks | rules |
 //! |---|---|---|
-//! | `0x2d8330` Bomb Glove (class 192, item 10) | the throw's aim point ([`aim_search`], [`BOMB_GLOVE`]) | range 15 (2D, from the launch point), within 45° of the reference yaw or 90° within 4, elevation < 55°, at most 2 above the launch point, a clear world line from the camera (flags 6); greedy: each accepted target becomes the reference (its yaw, its distance) for the rest of the list |
+//! | `0x2d8330` Bomb Glove (class 192, item 10) | the throw's aim point ([`aim_search`], [`BOMB_GLOVE`]) | range 15 (2D, from the launch point), within 45° of the reference yaw (first the launch point's: the facing − 20.7°) or 90° within 4, elevation < 55°, at most 2 above the launch point, a clear world line from the camera (flags 6); greedy: each accepted target becomes the reference (its yaw, its distance) for the rest of the list |
 //! | `0x2351d0` → `0x22e238` / `0x22dff0` melee aim assist (wrench swings, the Comet-Strike, the glove throw 0x23 without a glove target) | the swing's facing | range 11, cone 50° (`0x2351d0(11, 50°, −1)`), score `d + diff·d` (+7 for a record flag), health ≠ 0 |
 //! | `0x22c080` `HeroScanTargets` | the head-look target | every 7th tick; range = record `+0x38`, 110° cone, 60° pitch, score `d + diff·d` (−1.5 for the current one), record `+0x39` priority, a clear line from the head |
 //! | `0x2c7d68` (the Devastator 11, class 157; `crate::hero::devastator::search`) | the missile's aim and lock | creatures (class type 5); within 2.5 a hard lock (60° / 45°), else the cone 10° (+40° gold) narrowed by the record's radius byte `+0x0a` ([`cone_miss`]), a clear camera line; a creature no missile holds becomes the lock |
@@ -118,7 +118,7 @@ pub struct AimHit {
 }
 
 /// The aim search of `rules` over the target list `list`, from `from` (the launch point) with the reference yaw
-/// `yaw` (the facing): per target (live: state < 0x80, targetable, with a record) the aim point `position + (0, 0,
+/// `yaw` (the Bomb Glove's: the launch point's yaw, the facing − 20.7°): per target (live: state < 0x80, targetable, with a record) the aim point `position + (0, 0,
 /// record +0x10)`; accepted when inside the cones and the range, low enough, and `clear(point)` (the line of sight);
 /// the accepted target's yaw and distance become the reference for the targets after it (greedy, as the game).
 pub fn aim_search(rules: &AimRules, table: &MobyTable, list: &[MobyId], from: [f32; 3], yaw: f32, mut clear: impl FnMut([f32; 3]) -> bool) -> Option<AimHit> {
