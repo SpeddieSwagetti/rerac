@@ -26,8 +26,11 @@ teleport (HMDSOLO: the PS2 does it too).
 - Oltanis' lightning shows (df1947a: HMDSOLO 1562745815846363156 and idunnomate's intro 1562165341138845859: the alpha
   cut ignored the strike timer). HMDSOLO asks for the lightning to return after leaving the planet as a ReRAC extra
   (the original stops it for good): the user's call.
-- Same as the original by the decomp: the Blaster destroying Gemlik's towers (1562123434522189886: the shot is the hit's
-  attacker in the game too, and the towers count hits from above their top).
+- Oltanis' arrival strike on Clank (idunnomate's intro 1562165341138845859, PS2 frames from the user): level 14's scene
+  hook `0x2460f8` draws a three-segment bolt (`0x2459c0`) off the actor's joint and sparks (`0x245e98`) for six ticks
+  from scene tick 0x1c; ported as `cutscene_fx` + `Callback::SceneStrike`.
+- Gemlik's towers and the Blaster (1562123434522189886; the helpdesk says Devastator or Visibomb): on main the Blaster
+  no longer takes them from the base (82 hits headless, none above the tower's +8.7 test); retest after 0.3.7.
 
 **Open from the third pass:** the Hologuise's menu animation (1562218129155690506: reproduced: the worn props stay on
 the sentry; `fun_002250f0` has no visible test, needs a PS2 clip); crouching under Hoven's arcs (1562749075747512370:

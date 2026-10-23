@@ -820,6 +820,15 @@ fn draw_list1(
                         let live = drawn.is_some() || near || (p.svc.level != 0 && p.svc.game_mode != 0);
                         out.push(ship_glass_prims(g, &m, cam, live, state.glass.entry(id).or_default()));
                     }
+                    // Oltanis' arrival strike on Clank (level14 `0x2459c0`): on the drawn pose of the actor's joint list 0.
+                    Callback::SceneStrike => {
+                        let drawn = scene.as_deref().and_then(|rt| crate::scene_render::drawn_actor(rt, id)).map(|a| a.joint_matrix(0));
+                        let Some(m) = drawn.or_else(|| cbs.matrices.get(&id).copied()) else { continue };
+                        let g = rc_game::moby_update::classes::cutscene_fx::strike_quads(m);
+                        let mut b = PrimBuf::default();
+                        for q in g.quads { b.quad(q.corners, q.st, q.rgba); }
+                        out.push(FxGroup { fx: g.fx, additive: g.additive, subtract: g.subtract, prims: b });
+                    }
                     // The glow points (the beam: crate::vendor_render).
                     Callback::VendorBeam => {
                         let Some(mo) = p.game.mobys.mobys.get(id) else { continue };

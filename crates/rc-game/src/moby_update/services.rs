@@ -2118,12 +2118,19 @@ impl<'a> World<'a> {
     /// `PartType53Spawn(f12, f13, f14, pos, life, rgba, a3, t0, vel)` 0x287328 (bolt pickup sparkle): no draw
     /// for `a3` 0 / 1 (`randi(255)` otherwise).
     #[allow(clippy::too_many_arguments)]
-    pub fn part53(&mut self, s12: Pf, s13: Pf, s14: Pf, pos: V4, life: i32, rgba: u32, a3: i32, t0: i8, vel: V4) {
-        let Some(i) = self.part(0x35) else { return };
+    /// Returns the record (`None`: no free one), for the callers that write into it after (the byte +9).
+    pub fn part53(&mut self, s12: Pf, s13: Pf, s14: Pf, pos: V4, life: i32, rgba: u32, a3: i32, t0: i8, vel: V4) -> Option<usize> {
+        let i = self.part(0x35)?;
         let def = self.particles.as_ref().map(|p| p.def_first(0x35)).unwrap_or(0);
         let b8 = match a3 { 0 => 0, 1 => 0x20, _ => self.rng.randi(0xff) as u8 };
         let r = &mut self.particles.as_deref_mut().unwrap().pool.recs[i];
         crate::particles::type53::fill(r, def, s12.0, s13.0, s14.0, pos.map(|x| x.0), life, rgba, b8, t0, [vel[0].0, vel[1].0, vel[2].0]);
+        Some(i)
+    }
+
+    /// A particle record's byte `k` (a caller's write after its spawn).
+    pub fn set_part_byte(&mut self, i: usize, k: usize, v: u8) {
+        if let Some(r) = self.particles.as_deref_mut().and_then(|p| p.pool.recs.get_mut(i)) { r[k] = v; }
     }
 
     /// `PartType60Spawn(size, pos, vel, rgba, life, rot, attach)` 0x288588 (the glint; no draw: `rot` is the caller's
