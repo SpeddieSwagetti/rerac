@@ -277,7 +277,10 @@ pub fn hero_teleport(w: &mut World, pos: [f32; 3], euler: [f32; 3], state: i32, 
     f.call(HeroCall::Teleport { state });
     // `0x167494 = (0x1413dc == 0x11)` after the SetState (the group of the state it sets: applied with the camera).
     w.svc.water.underwater_store = Some((w.counter, crate::water::world::UnderwaterStore::HeroGroup));
-    if reset_cam { w.svc.cinematic.calls.push(CinematicCall::CameraResetBehindHero); }
+    if reset_cam {
+        w.svc.cinematic.calls.push(CinematicCall::CameraResetBehindHero);
+        if let Some(s) = w.sound.as_deref_mut() { s.camera_reset_at(pos); }
+    }
     // `EnvNearestSamplePoint(hero)`: the env sample point near the destination (reverb, music track; crate::audio).
     if let Some(s) = w.sound.as_deref_mut() { s.hero_teleported(pos); }
 }

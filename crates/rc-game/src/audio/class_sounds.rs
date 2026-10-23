@@ -200,6 +200,11 @@ impl SoundSink for ClassSoundSink<'_> {
     }
     /// `HeroTeleport`'s env sample point ([`AudioSystem::hero_teleported`]).
     fn hero_teleported(&mut self, pos: [f32; 3]) { self.audio.hero_teleported(pos); }
+    /// The rest of the tick's starts measure from the destination: the game moves the camera there before the caller's
+    /// next sound (the teleporter pad's arrival sound 1 on its partner, which the old listener refused as out of
+    /// range). [L] Ratchet's point stands for the camera snapped behind him (the snap runs in the camera update; only
+    /// the start test reads it, the volume after that follows the camera).
+    fn camera_reset_at(&mut self, pos: [f32; 3]) { self.listener.pos = pos; }
     /// `MusicRequestTrack(track, stinger)` from a class ([`crate::audio::music::Music::request`]).
     fn music_request(&mut self, track: i16, stinger: i16) {
         self.audio.level_music_start();

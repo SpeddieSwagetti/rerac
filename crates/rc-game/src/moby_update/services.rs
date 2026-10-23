@@ -565,6 +565,9 @@ pub trait SoundSink {
     /// `HeroTeleport` 0x2368e0 moved Ratchet to `pos` (its `EnvNearestSamplePoint`: reverb and music track). Default:
     /// nothing.
     fn hero_teleported(&mut self, _pos: [f32; 3]) {}
+    /// `HeroTeleport(…, 1)`'s `CameraResetBehindHero`: the camera (0x167240, the point `SoundSlotAlloc` measures a new
+    /// sound's start volume from) is behind Ratchet at `pos` from here on in the tick. Default: nothing.
+    fn camera_reset_at(&mut self, _pos: [f32; 3]) {}
     /// `MusicRequestTrack(track, stinger)` 0x27a248 called by a class (the teleporter pads 1135's P+0x40 / P+0x44).
     /// Default: nothing.
     fn music_request(&mut self, _track: i16, _stinger: i16) {}
