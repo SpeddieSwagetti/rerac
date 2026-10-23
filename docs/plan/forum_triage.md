@@ -24,7 +24,8 @@ the Glove of Doom for its glow); the waterfalls flicker where they bend over the
 Pokitaru 1561285436104642710: two surfaces at one depth; needs the spot from the user, F9); the Devastator on ice
 swings out and up while firing (1562752763774107738: the weapon arm layer against the ice slide's arm pitch; needs a
 traced repro on Hoven); the map's black bar at the top and its shape while zooming (1560493051481165875); the Suck
-Cannon post (1562970122572791888) has a title only (ask what breaks).
+Cannon post (1562970122572791888) has a title only (ask what breaks); the Visibomb's missile seen for a moment
+before the green view (1562010718641987654: the decomp launches and cuts on the press; needs a PS2 clip).
 
 **Fixed on main (retest after 0.3.7):** the hollow / outline-only crosshairs (de9ae8b): everfeel 1562187260252921947,
 ZFPInTheAir 1562540111143501914. Launcher "Could not move the build into … os error 5" (Windows): retried rename, then
