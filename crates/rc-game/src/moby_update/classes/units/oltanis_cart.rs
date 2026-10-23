@@ -4,7 +4,7 @@
 //!
 //! * 0: the paths checked (A not empty, the wall path of 11 points; else deleted); each path's chords and length (the
 //!   last point's chord back to the first); at A's start with its start rotation (+0xd0), direction −1; the way on
-//!   to B (+0x124) once its spawn is marked dead and the mission +0x110 is done; dim (0x80303030).
+//!   to B (+0x124) while the mission +0x110 is done and its spawn is not marked dead (the PDA bought); dim (0x80303030).
 //! * 1 (waiting): its glow pulses while Ratchet is within 40 (x and y); his cuboids put it at A's start (+0x118), A's
 //!   end (+0x11c) or B's end (+0x120); Ratchet standing on it within 1 (xy): sound 1 (at the stop volume), it
 //!   starts (from A's end back to A's start; from the start along A, or B with the way on), 2.
@@ -136,7 +136,9 @@ pub fn update(w: &mut World, id: MobyId) {
             let sid = w.m(id).spawn_id;
             let collected = w.svc.save.collected.get(&sid).is_some_and(|&b| b != 0);
             let dead = w.svc.save.death.contains(&(w.svc.level, sid));
-            let way = !collected && dead && story::mission_done(w, c::pi32(w, id, o::MISSION));
+            // Steve's stall turns the way on when he is met (`0x2ef578`) and off for good, with these death bits, once
+            // the PDA is bought (`0x2ef5a8`): after that the cart takes Ratchet back to the course's start.
+            let way = !collected && !dead && story::mission_done(w, c::pi32(w, id, o::MISSION));
             c::set_pi16(w, id, o::WAY, way as i16);
             let m = w.mm(id);
             m.update_dist = 0xff;
@@ -324,4 +326,38 @@ fn wall(w: &mut World, id: MobyId) {
         if let Some(pt) = w.svc.splines[k].get_mut(j) { *pt = [q[0].to_bits(), q[1].to_bits(), q[2].to_bits(), 1.0f32.to_bits()]; }
     }
     w.hero_fields_mut().wall_spline = Some(k as i16);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::moby_runtime::{Moby, MobyTable};
+    use crate::moby_update::services::Services;
+    use crate::rng::Rng;
+
+    /// Dion 07's Oltanis post: back on the planet after the PDA, the lift by the ship ran straight to Steve's end of the
+    /// course. The way on to B needs the mission done and the cart's death bits clear (`0x2eea08..0x2eea9c`); buying the
+    /// PDA sets them (`0x2ef5a8`), so from then on it runs path A again.
+    #[test]
+    fn the_way_to_steve_closes_once_the_pda_is_bought() {
+        let way = |dead: bool| {
+            let mut pv = vec![0u8; o::SIZE];
+            for (k, v) in [(o::PATH_A, 0i32), (o::WALL, 1), (o::PATH_B, 2), (o::MISSION, 3)] { pv[k..k + 4].copy_from_slice(&v.to_le_bytes()); }
+            let mut t = MobyTable::new(vec![Moby { o_class: CLASSES[0], spawn_id: 7, pvars: pv, ..Moby::default() }], 4);
+            let hero = crate::hero::Hero::new();
+            let mut rng = Rng::new();
+            let classes = crate::moby_update::ClassTable::default();
+            let mut svc = Services::new();
+            svc.level = 14;
+            let pt = |x: f32| [x.to_bits(), 0, 0, 0];
+            svc.splines = vec![vec![pt(0.0), pt(1.0)], (0..11).map(|i| pt(i as f32)).collect(), vec![pt(1.0), pt(2.0)]];
+            svc.cinematic.requests.push(crate::cinematic::EngineRequest::MissionDone { mission: 3 });
+            if dead { svc.save.death.insert((14, 7)); }
+            let mut w = World::new(&mut t, &hero, &mut rng, &classes, &mut svc, 1);
+            update(&mut w, 0);
+            c::pi16(&w, 0, o::WAY)
+        };
+        assert_eq!(way(false), 1, "Steve met, the PDA not bought: on to him");
+        assert_eq!(way(true), 0, "the PDA bought: back to the course's start");
+    }
 }
