@@ -32,6 +32,25 @@ teleport (HMDSOLO: the PS2 does it too).
 - Gemlik's towers and the Blaster (1562123434522189886; the helpdesk says Devastator or Visibomb): on main the Blaster
   no longer takes them from the base (82 hits headless, none above the tower's +8.7 test); retest after 0.3.7.
 
+**Fourth pass, same day (all on main, retest after 0.3.7):**
+- Oltanis' course lift by the ship runs back to the course's start once the PDA is bought (2195e4d: Dion 07
+  1562847989691842620; the cart's way on to Steve needs its death bits clear, the port wanted them set).
+- Bombs sink in moving water too (e9dfd0e: idunnomate 1562125255873532014; the game's water test is the hit's surface
+  type alone, and Umbris's tanks, Pokitaru, Rilgar, Hoven and Veldin 2 have moby water).
+- The Bomb Glove's auto-aim cone starts from the glove hand's yaw, 20.7° right of the facing (5f640ac: HMDSOLO
+  1562298315612364810, crates picked on the left).
+- Bombs thrown on a moving platform take Ratchet's motion (9d37410: HMDSOLO 1562302440961744917, Metropolis's train).
+- The PDA shop shows the player's own view behind it with the vendor stand below (1de17e8: HMDSOLO
+  1562747362307211324; the port drew the world along +x everywhere).
+
+**Looked at in the fourth pass:** the "oof" at a wall (1562191825899360416): the rebound states 0x21 / 0x7a play no
+voice in SetState, the transitions or the physics, and start their animation at key 5, past its triggers: the port
+does the same; needs a PS2 clip of when the oof plays. The barriers' "bit" (1562755433498673152): each barrier row has
+a class-0 sphere emitter (defs 29..31, 0/0 retrigger), the port's matches `0x3197a0`; the clip's audio is too busy to
+find the click: needs the exact moment or a clean recording. The Swingshot at Outpost X11 (1562477069412081776): the
+searches and the score match `0x221ee0` / `0x22dff0`; the clip shows the hook holding for 4 s with no swing, so the
+swing state's start; needs a repro at the spot.
+
 **Open from the third pass:** the Hologuise's menu animation (1562218129155690506: reproduced: the worn props stay on
 the sentry; `fun_002250f0` has no visible test, needs a PS2 clip); crouching under Hoven's arcs (1562749075747512370:
 Ratchet's collision is two fixed cylinders the game never changes; the PS2 clip also loses health: needs a closer
