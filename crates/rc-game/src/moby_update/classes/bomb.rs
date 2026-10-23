@@ -117,7 +117,7 @@ pub fn init_held(m: &mut crate::moby_runtime::Moby, rng: &mut crate::rng::Rng, p
 }
 
 /// `FUN_002c27a8(point, bomb)`: the release — the flash timer 30, state 1, the velocity the glove's aim left in the
-/// pvars (plus Ratchet's velocity while grinding: `grind_vel`), the 300-tick fuse, at `point`; a wall between
+/// pvars (plus Ratchet's velocity while grinding or riding a carrier: `grind_vel`), the 300-tick fuse, at `point`; a wall between
 /// Ratchet (`hero_pos`, at the point's height) and the point explodes it there at once. Returns the line to test
 /// `(from, to)`: the caller runs it (it needs the collision) and passes the hit point to [`release_hit`].
 pub fn release(m: &mut crate::moby_runtime::Moby, point: [f32; 3], grind_vel: Option<[f32; 3]>) {

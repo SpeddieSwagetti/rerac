@@ -397,10 +397,12 @@ fn create_bomb(hero: &mut Hero, table: &mut MobyTable, env: &ItemEnv, hits: &mut
     Some(b)
 }
 
-/// `0x2c27a8`: the bomb released at the launch point (plus Ratchet's displacement while grinding); a wall between
-/// Ratchet (at the launch height) and the launch point explodes it there.
+/// `0x2c27a8`: the bomb released at the launch point (plus Ratchet's displacement 0x13f450 while grinding or standing
+/// on a carrier, `FUN_00275290(0x13f64c)`: the Metropolis train); a wall between Ratchet (at the launch height) and the
+/// launch point explodes it there.
 fn release_bomb(hero: &mut Hero, table: &mut MobyTable, env: &ItemEnv, _hits: &mut dyn HitSink, _rng: &mut Rng, b: MobyId, t: Throw) {
-    let grind = if hero.group == 0xf { Some(to_f32x3(hero.disp)) } else { None };
+    let carried = hero.ground_moby.and_then(|g| table.mobys.get(g)).is_some_and(|m| crate::moby_update::triggers::platform_block(m).is_some());
+    let grind = if hero.group == 0xf || carried { Some(to_f32x3(hero.disp)) } else { None };
     bomb::release(&mut table.mobys[b], t.launch, grind);
     let r = &table.mobys[env.hero_moby];
     let from = [r.position[0], r.position[1], t.launch[2]];
