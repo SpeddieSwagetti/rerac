@@ -1305,6 +1305,8 @@ fn freeze_effects(play: &mut Play, out: &rc_game::menus::freeze::FreezeOut, fram
         // The HUD handle 0x13fbd0 stopped (the freeze set its copy to −1) and the finished counter (0x15ee38 / 0x15ee3c).
         if q.stop_sound.is_some() { play.game.hero.board.hud = -1; }
         if let Some(k) = q.count { play.svc.board.records.finished[k] += 1; }
+        // update_resource_counter: the weapon show's gate the race's start raised (`HudState::weapon_hide`).
+        play.svc.hud.resource_counter();
         println!("menus: frame {frame}: Quit Race: HUD handle {:?} stopped, finished counter {:?}, update_resource_counter, HeroTeleport(entry pose)", q.stop_sound, q.count);
     }
     if out.race_rewind {

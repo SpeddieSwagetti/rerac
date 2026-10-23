@@ -50,7 +50,7 @@
 //! | 0x24b458 / 0x24ee20 / 0x24eed8 | bolt alert: flag-driven ramp; nothing in body 2 / state 0x32 / slide 0; bar, spinning bolt, pulsing "!" | `init_alert`, `update_alert`, `draw_alert` |
 //! | 0x227d90 `HudBoltAlertShow` | queues element 7 with the Metal Detector owned and a cache within 20 | `classes::buried_bolts::alert_frame` → `Services::hud` |
 //! | 0x24f9c0 body 2 | Giant Clank's energy: `0x24f248` (sub-rect bar `221·shown/200 + 27`, frame, beam light) | `update_weapon_request`, `draw_giant` |
-//! | 0x24f9c0 `iGpffff8d68` | weapon show skipped after `FUN_0024fb00` until `update_resource_counter` | ported (`HudState::weapon_gate`; the vendor's own slot-0 requests 0x30 and their release on its exit: `HudState::vendor_requests`) |
+//! | 0x24f9c0 `iGpffff8d68` | weapon show skipped after `FUN_0024fb00` (the vendor) or the board races' `0x264298` until `update_resource_counter` | ported (`HudState::weapon_gate`, [`HudState::weapon_hide`], [`HudState::resource_counter`]; the vendor's own slot-0 requests 0x30 and their release on its exit: `HudState::vendor_requests`) |
 //! | 0x231348 leave body 2 | `FUN_0024b090(0x140984, 0)` | `frame_calls` (body ≠ 2 → flags 0) |
 //! | level18 0x23cd60 (06 0x249738, 07, 13) | boss meter: n segments (3; 6 on 07 / 13; 7 on 18), level 13 at the top, the squeezed ends, red → yellow → green fill | [`Element::Boss`], `draw_boss`; consumers: `Calls::boss_meter` (level06 0x2f9a28 class 1051, level18 0x2f7288 for 1422: G-CLS-001) |
 //! | 0x226fa8 `HeroTakeDamage` → 0x24a498 | health queued on damage only (a gain is shown by the element already in slot 1) | `frame_calls` (health went down) |
@@ -669,6 +669,8 @@ impl HudState {
                 Call::Data(k, v) => {
                     self.words.insert(k, v);
                 }
+                Call::WeaponHide => self.weapon_hide(),
+                Call::ResourceCounter => self.resource_counter(),
             }
         }
     }
@@ -781,6 +783,20 @@ impl HudState {
         self.empty_slots();
         self.weapon_handle = None;
         self.weapon_gate = 1;
+    }
+
+    /// The board levels' `0x264298` (level05, at the race start with the boost meter; level16 the same): the weapon show's
+    /// element let go (`FUN_0024b090(handle, 0)`), its item word 0 and the gate + 1, so the boost meter keeps slot 0 for
+    /// the race; [`HudState::resource_counter`] at its end opens it again.
+    pub fn weapon_hide(&mut self) {
+        if let Some(h) = self.weapon_handle.take() { self.set_flags(h, 0); }
+        self.weapon_gate += 1;
+    }
+
+    /// `update_resource_counter` (0x24fb38): the weapon show's gate − 1 (not below 0): the vendor's exit, a board race's
+    /// end and its Quit Race.
+    pub fn resource_counter(&mut self) {
+        if self.weapon_gate != 0 { self.weapon_gate -= 1; }
     }
 
     /// The slots emptied at once (no ramp), the requests the elements keep re-made by their owners: `FUN_0024af10`, and
@@ -1081,7 +1097,7 @@ impl HudState {
                 self.vendor_open = false;
                 self.vendor_sel = None;
                 if let Some(h) = self.vendor_handle.take() { self.set_flags(h, 0); }
-                if self.weapon_gate != 0 { self.weapon_gate -= 1; }
+                self.resource_counter();
             }
             None => {}
         }
@@ -2190,6 +2206,25 @@ mod tests {
         assert_eq!((h.slots[0].slide, h.slots[0].alpha), (0, 0));
         for _ in 0..200 { h.tick(held(10, 40)); }
         assert_eq!((h.slots[0].icon, h.slots[0].shown), (icon::ITEM_BASE + 10, 25));
+    }
+
+    /// A board race with a weapon held (HMDSOLO's and Pamo13's posts: no boost meter, the ammo counter stayed): the race's
+    /// start lets go of the weapon show and holds it off (`0x264298`), so the meter it queues takes slot 0; its end
+    /// (`update_resource_counter`) gives the slot back to the held weapon.
+    #[test]
+    fn a_board_race_holds_the_weapon_counter_off() {
+        let mut h = HudState::new(assets());
+        let mut ammo = [0; 37];
+        ammo[10] = 25;
+        let held = Inputs { weapon: Some((10, 25, 40)), ammo, ..inputs(4, 0) };
+        for _ in 0..50 { h.tick(held); }
+        assert_eq!(h.slots[0].icon, icon::ITEM_BASE + 10);
+        h.apply_calls(&[Call::WeaponHide, Call::Queue(Request::race_meter(17))]);
+        for _ in 0..80 { h.tick(held); }
+        assert_eq!(h.slots[0].element, Element::RaceMeter, "the meter keeps slot 0 for the race");
+        h.apply_calls(&[Call::SetFlags(Request::race_meter(17), 0), Call::ResourceCounter]);
+        for _ in 0..200 { h.tick(held); }
+        assert_eq!((h.slots[0].icon, h.slots[0].shown), (icon::ITEM_BASE + 10, 25), "the weapon's counter after the race");
     }
 
     /// The help box of the game tick (crate::help) drawn by the HUD: sized with the small font, centred at (256, H − 60),
