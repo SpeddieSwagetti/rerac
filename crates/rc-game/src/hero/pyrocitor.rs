@@ -224,7 +224,8 @@ pub fn update(hero: &mut Hero, table: &mut MobyTable, _anim: &dyn super::anim::A
             // Its owner's fields, read by its update in the next moby loop.
             if m.pvars.len() < 0x10 { m.pvars.resize(0x10, 0); }
             m.pvars[glow_pv::OWNER_STATE] = it.mstate;
-            m.pvars[glow_pv::OWNER_HIDDEN] = (hero.f13f5 != 0) as u8;
+            // The hand moby's hidden bit: the first-person view (0x1413f5) or a gold bolt's pickup (0x1413ff).
+            m.pvars[glow_pv::OWNER_HIDDEN] = (hero.f13f5 != 0 || hero.f13ff != 0) as u8;
             let r = hero.items.slot.ticks_ready.clamp(0, i16::MAX as i32) as i16;
             m.pvars[glow_pv::READY..glow_pv::READY + 2].copy_from_slice(&r.to_le_bytes());
         }
