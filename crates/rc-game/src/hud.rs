@@ -2215,16 +2215,29 @@ mod tests {
     fn a_board_race_holds_the_weapon_counter_off() {
         let mut h = HudState::new(assets());
         let mut ammo = [0; 37];
-        ammo[10] = 25;
-        let held = Inputs { weapon: Some((10, 25, 40)), ammo, ..inputs(4, 0) };
-        for _ in 0..50 { h.tick(held); }
+        (ammo[10], ammo[11]) = (25, 7);
+        let held = |item: u16, max: i32| Inputs { weapon: Some((item, ammo[item as usize], max)), ammo, ..inputs(4, 0) };
+        let weapon_shown = |h: &HudState| h.slots.iter().any(|s| matches!(s.element, Element::Weapon { .. }) && s.alpha != 0);
+        for _ in 0..50 { h.tick(held(10, 40)); }
         assert_eq!(h.slots[0].icon, icon::ITEM_BASE + 10);
         h.apply_calls(&[Call::WeaponHide, Call::Queue(Request::race_meter(17))]);
-        for _ in 0..80 { h.tick(held); }
+        for k in 0..300 {
+            // A switch mid-race (the screenshots: two counters at once; the hand is empty a few frames) changes nothing.
+            h.tick(if (150..153).contains(&k) { inputs(4, 0) } else { held(if k < 150 { 10 } else { 11 }, 40) });
+            if k > 60 { assert!(!weapon_shown(&h), "no ammo counter during the race (tick {k})"); }
+        }
         assert_eq!(h.slots[0].element, Element::RaceMeter, "the meter keeps slot 0 for the race");
         h.apply_calls(&[Call::SetFlags(Request::race_meter(17), 0), Call::ResourceCounter]);
-        for _ in 0..200 { h.tick(held); }
+        for _ in 0..200 { h.tick(held(10, 40)); }
         assert_eq!((h.slots[0].icon, h.slots[0].shown), (icon::ITEM_BASE + 10, 25), "the weapon's counter after the race");
+        // And it follows the next switch (the hand empty a few frames, `delete_hand`), which the old port could not: the
+        // meter's request had made the weapon's next one pending over the shown counter, whose flag 0x10 a release of the
+        // pending request does not clear (`FUN_0024b090`), so it never left (the post: it stayed on the race's weapon).
+        for _ in 0..3 { h.tick(inputs(4, 0)); }
+        for _ in 0..200 { h.tick(held(11, 20)); }
+        assert_eq!((h.slots[0].icon, h.slots[0].shown, h.slots[0].max), (icon::ITEM_BASE + 11, 7, 20));
+        for _ in 0..60 { h.tick(inputs(4, 0)); }
+        assert!(!weapon_shown(&h), "the wrench hides it");
     }
 
     /// The help box of the game tick (crate::help) drawn by the HUD: sized with the small font, centred at (256, H − 60),
