@@ -78,7 +78,8 @@ pub mod label {
     pub const GOODIES_TEXTS: u32 = 0x1b6df8;
     /// The end page's ○ target with a memory card: the save page (`SavingDataMenu2` 0x296fc0).
     pub const SAVE_PAGE: u32 = 0x1b9440;
-    /// The image widget's language table (flag 0x1000): the first entry of each language (s32 × 6).
+    /// The image widget's language table (flag 0x1000): the first entry of each language (s32 × 6). Relocated per
+    /// level (`menus::DATA_LABELS`).
     pub const LANG_OFFSETS: u32 = 0x20a2d0;
     /// The kind-0x23 page's label (its +0x34 is 0x1b7074) and its message lists (s32 ids ending at −1).
     pub const SCROLL_LABEL: u32 = 0x1b7040;
@@ -658,4 +659,22 @@ pub fn scroller_draw(m: &mut PageMenu, w: u32, a: &MenuAssets, out: &mut Vec<Men
         _ => {}
     }
     2
+}
+
+#[cfg(test)]
+mod level_tables {
+    /// Every level's overlay reads level 01's language table (English 0, French 12, German 36, Spanish 48, Italian 24):
+    /// unmapped, the Epilogue showed an empty frame everywhere but Novalis.
+    #[test]
+    fn every_level_reads_the_epilogue_language_table() {
+        let root = rc_formats::test_data::root();
+        let Ok(reference) = std::fs::read(root.join("levels/01/overlay.bin")) else { eprintln!("skipped: no level 01 overlay"); return };
+        let read = |ov: &crate::menus::Overlay| (0..6u32).map(|k| ov.i32(ov.at(super::label::LANG_OFFSETS) + 4 * k)).collect::<Vec<_>>();
+        let want = read(&crate::menus::Overlay::parse(&reference).unwrap());
+        assert_eq!(want, [0, 0, 12, 36, 48, 24].map(Some));
+        for lv in 0..=18u32 {
+            let Ok(b) = std::fs::read(root.join(format!("levels/{lv:02}/overlay.bin"))) else { continue };
+            assert_eq!(read(&crate::menus::Overlay::relocated(&b, &reference).unwrap()), want, "level {lv}");
+        }
+    }
 }

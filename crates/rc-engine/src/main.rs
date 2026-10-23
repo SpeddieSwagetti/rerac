@@ -22,6 +22,8 @@
 //! - `RC_SCENE=0` / `RC_SCENE=<k>`, `RC_SUBTITLES=0` in-engine scenes (Novalis arrival = scene 5), crate::scene_render
 //! - `RC_UNLOCK_PLANETS=<p>,…` planets unlocked from the start (the ship's planet page), crate::gameplay;
 //!   `RC_TRAVEL_TRACE=1` the ship / mode-6 / transition trace, crate::travel_render
+//! - `RC_GAME_BEATEN=1` the Goodies on the pause menu, `RC_SKILL_POINTS=all` every skill point (Sketchbook, Epilogue),
+//!   crate::gameplay
 //! - `RC_HUD=0`, `RC_HUD_DEMO=1`, `RC_HUD_TEXT`, `RC_HUD_HELP=<id>`, `RC_LANG` the HUD and its demos, crate::hud_render
 //! - `RC_SCREEN_TINT=<rgba hex>:<alpha hex>` one forced full-screen tint every frame (dev check), crate::screen_tint
 //! - `RC_MSAA=0|2|4|8` the Anti-aliasing option at start: Off or that multisampling (default: Original, the game's own softening passes), crate::graphics

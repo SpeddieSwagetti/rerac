@@ -205,6 +205,11 @@ pub fn boot_state(root: &std::path::Path, index: u32) -> Option<(GameState, Sess
         gs.global.game_beaten = 1;
         println!("game state: RC_GAME_BEATEN=1: Goodies on the pause menu");
     }
+    // RC_SKILL_POINTS=all: every skill point earned (0x13d408, debug): the Goodies' Sketchbook and Epilogue unlock.
+    if std::env::var("RC_SKILL_POINTS").is_ok_and(|v| v.trim() == "all") {
+        for b in gs.global.skill_points.iter_mut() { *b = 1; }
+        println!("game state: RC_SKILL_POINTS=all: every skill point earned");
+    }
     if let Some(ids) = give_items() {
         use rc_game::inventory::{debug_grant, GrantEquip};
         // With the ammo `GiveItem` grants (the item record's +0x12), so a given weapon can fire.

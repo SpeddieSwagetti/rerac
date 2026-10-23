@@ -419,3 +419,22 @@ fn goodies_skill_points_and_movies() {
     run(&mut d, &mut m, &mut gs, &[(button::CROSS, 20)]);
     assert_eq!((m.menu.current, d.sounds.clone()), (GOODIES, vec![MenuSound::Denied]));
 }
+
+/// Goodies → Epilogue (all 30 skill points: `0x29aa60` makes it action 3): the image widget (flag 0x1000, the language
+/// table) shows `epilogue_english` picture 0, then ✕ steps the pager to picture 1 (idunnomate's post: an empty frame).
+#[test]
+fn goodies_epilogue_shows_its_pictures() {
+    let Some((mut gs, mut m)) = setup() else { eprintln!("skipped: no extracted/"); return };
+    gs.global.game_beaten = 1;
+    for b in gs.global.skill_points.iter_mut() { *b = 1; }
+    let mut d = Drv::default();
+    open_root(&mut d, &mut m, &mut gs, 6);
+    assert_eq!(m.menu.current, GOODIES);
+    for _ in 0..6 { run(&mut d, &mut m, &mut gs, &[(button::DOWN, 3)]); }
+    run(&mut d, &mut m, &mut gs, &[(button::CROSS, 20)]);
+    let draws = run(&mut d, &mut m, &mut gs, &[(0, 30)]);
+    let first = *images(&draws).first().expect("an epilogue picture is drawn");
+    run(&mut d, &mut m, &mut gs, &[(button::CROSS, 1)]);
+    let draws = run(&mut d, &mut m, &mut gs, &[(0, 30)]);
+    assert_ne!(images(&draws).first().copied(), Some(first), "✕ shows the next picture");
+}
