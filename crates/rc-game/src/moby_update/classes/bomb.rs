@@ -9,8 +9,8 @@
 //! (x 120°/s, y 450°/s), moves by its velocity (+0x00) under gravity 11 u/s² (1.1 under water), and tests its path
 //! (`CollLine_Fix(old, new, 0x10, bomb, tmpl)`: template flags 0x830000 (| 1 after its first 10 ticks), damage 2,
 //! so a crate on the path gets its hit): a hit explodes it — except Ratchet or the glove in its first 10 ticks;
-//! water (surface 0) while falling: it sinks at 1.5 u/s until its 300-tick fuse (+0x54) runs out; the fuse ends in
-//! the air too. **The explosion** (moby +0xbc = 1): the sphere 0.5 lists the mobys (`coll_sphere_mobys`, flags
+//! water (surface 0, the world's or a moby's) while falling: it sinks at 1.5 u/s until its 300-tick fuse (+0x54)
+//! runs out; the fuse ends in the air too. **The explosion** (moby +0xbc = 1): the sphere 0.5 lists the mobys (`coll_sphere_mobys`, flags
 //! 0x10) and hits them (`0x26f8f8`: damage 2, push 1 away from the bomb and 1 up, flags 0x830000) → state **2**; the fireballs (10 low ones, 4 + 1 high,
 //! the last toward the camera), the type-11 smoke rings (1..4 by the camera distance), the flashes (class 1192:
 //! two more when the camera is farther than 9), the class sound 0, the camera shake along up `0.4 − 0.0175·d`
@@ -318,7 +318,9 @@ fn fly(w: &mut World, id: MobyId) {
             p::set_i16(&mut m.pvars, pv::LIFE, t);
         }
         Some(h) => {
-            let water_face = h.moby.is_none() && h.surface_id() == 0;
+            // `coll_type() == 0` (0x1f0b58) on whatever was hit: the moving water of Umbris's tanks, Pokitaru, Rilgar,
+            // Hoven and Veldin 2 is moby collision (classes whose every face is type 0), and the bomb sinks in it too.
+            let water_face = h.surface_id() == 0;
             if water == 0 && water_face && vel[2] < 0.0 {
                 // Into water: sink slowly; the ripple, splash and drops (`bomb_water::entry`).
                 let m = w.mm(id);
