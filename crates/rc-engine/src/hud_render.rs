@@ -952,7 +952,7 @@ fn tick_and_build(
     (mut play, mut audio): (Option<ResMut<crate::gameplay::Play>>, Option<ResMut<crate::audio_out::AudioOut>>),
     dyn_images: Option<Res<crate::hud_images::HudImages>>,
     (display, mut images): (Option<Res<crate::display::DisplaySettings>>, ResMut<Assets<Image>>),
-    (mut composites, mut static_composites, mut targets): (ResMut<Assets<HudComposite>>, ResMut<Assets<HudStaticComposite>>, Query<&mut RenderTarget>),
+    (mut composites, mut static_composites, mut over_composites, mut targets): (ResMut<Assets<HudComposite>>, ResMut<Assets<HudStaticComposite>>, ResMut<Assets<HudCompositeOver>>, Query<&mut RenderTarget>),
 ) {
     let Some(mut rt) = rt else { return };
     let rt = &mut *rt;
@@ -969,6 +969,9 @@ fn tick_and_build(
                 if matches!(&*t, RenderTarget::Image(i) if i.handle.id() == old.id()) { *t = RenderTarget::Image(new.clone().into()); }
             }
             for (_, m) in composites.iter_mut() { if m.image.id() == old.id() { m.image = new.clone(); } }
+            // The alpha-above-1 nodes too: left on the old image they drew nothing in 16:9 (the markers' solid middles
+            // see-through, as the main node leaves those pixels to them).
+            for (_, m) in over_composites.iter_mut() { if m.image.id() == old.id() { m.image = new.clone(); } }
             for (_, m) in static_composites.iter_mut() { if m.image.id() == old.id() { m.image = new.clone(); } }
             if old.id() == rt.target.id() { rt.target = new; } else { rt.static_target = new; }
         }
