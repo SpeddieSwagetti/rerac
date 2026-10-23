@@ -137,6 +137,8 @@ pub fn lines(p: &crate::gameplay::Play) -> Vec<String> {
     let pos = h.pos.map(|v| v.to_f32());
     let vel = h.vel.map(|v| v.to_f32());
     let yaw = h.rot[2].to_f32();
+    let d = h.disp.map(|v| v.to_f32());
+    let moved = [(d[0] * d[0] + d[1] * d[1]).sqrt() * 60.0, (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() * 60.0];
     let cam = p.game.camera.out;
     let cp = cam.pos_f32();
     let mut out = vec![
@@ -145,6 +147,9 @@ pub fn lines(p: &crate::gameplay::Play) -> Vec<String> {
         format!("YAW {:.3} RAD  {:.1} DEG", yaw, yaw.to_degrees()),
         format!("STATE {:#x}  GROUP {:#x}  BODY {}  AIR {}", h.state, h.group, h.mode, h.air_ticks),
         format!("VEL {:.3} {:.3} {:.3}", vel[0], vel[1], vel[2]),
+        // 0x13f4e4 / 0x13f4e0 (u/tick), and what the tick's move did (0x13f450, the platform's carry included).
+        format!("SPEED {:.3}/TICK {:.2} U/S  TARGET {:.2} U/S", h.speed.to_f32(), h.speed.to_f32() * 60.0, h.target_speed.to_f32() * 60.0),
+        format!("MOVED {:.2} U/S  3D {:.2} U/S", moved[0], moved[1]),
         format!("GROUND {}", h.ground_moby.map_or_else(|| "world".to_string(), |id| moby_text(p, id))),
         format!("CAM {:.2} {:.2} {:.2}  YAW {:.3}  PITCH {:.3}", cp[0], cp[1], cp[2], cam.euler[2].to_f32(), cam.euler[1].to_f32()),
         format!("LOOK {}", looked_at(p).map_or_else(|| "-".to_string(), |(id, d)| format!("{} dist {d:.1}", moby_text(p, id)))),
