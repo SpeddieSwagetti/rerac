@@ -1053,9 +1053,10 @@ fn tick_and_build(
     // The guns' screen markers (`DrawWorld`'s 2D overlay before the HUD: crate::marker_render).
     if let Some(p) = play.as_deref().filter(|_| !hook.replace_hud && !scene.hide_hud) { rt.hud2d.prims.extend(crate::marker_render::prims(p)); }
     let mut st = crate::text_render::TextState::default();
-    // The moby draw callbacks' 2-D layer (the vehicles' HUDs: rc_game draw_callbacks::screen / screen_texts), drawn by
-    // `DrawWorld` with the mobys' callbacks, before the HUD.
-    if let Some(p) = play.as_deref().filter(|_| !hook.replace_hud && !scene.hide_hud) {
+    // The moby draw callbacks' 2-D layer (the vehicles' HUDs, Quartu's scene captions: rc_game draw_callbacks::screen /
+    // screen_texts), drawn by `DrawWorld` with the mobys' callbacks, before the HUD; in scenes too (the callbacks run
+    // in every mode the world draws).
+    if let Some(p) = play.as_deref().filter(|_| !hook.replace_hud) {
         use rc_game::moby_update::classes::draw_callbacks::ScreenTex;
         let cb = &p.svc.draw_callbacks;
         for q in &cb.screen {
@@ -1067,7 +1068,7 @@ fn tick_and_build(
         }
         for t in &cb.screen_texts {
             let g = rt.glyphs[t.font as usize];
-            let width = rc_formats::font::measure_text_width(&t.text, t.len, &g);
+            let width = if t.left { 0 } else { rc_formats::font::measure_text_width(&t.text, t.len, &g) };
             crate::text_render::font_print(&mut rt.hud2d, &mut st, &g, t.font, t.x - (width >> 1), t.y, t.rgba, &t.text, t.len);
         }
     }

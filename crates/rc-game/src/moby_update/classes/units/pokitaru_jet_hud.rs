@@ -257,7 +257,7 @@ pub fn hud_frame(w: &mut World, id: MobyId) {
     helps(w, id);
     if w.m(id).state == 8 {
         let text = w.svc.interact.msg(DONE_MSG);
-        w.svc.draw_callbacks.screen_texts.push(ScreenText { x: 256, y: 200, rgba: 0x8000_5080, text, len: 0x11, font: rc_formats::font::Font::Regular });
+        w.svc.draw_callbacks.screen_texts.push(ScreenText { x: 256, y: 200, rgba: 0x8000_5080, text, len: 0x11, font: rc_formats::font::Font::Regular, left: false });
     }
     // ALPHA_1 0x48 (`VU1_addGSregister(0x42, 0x8000000048)`) after the gauge's two quads.
     for q in out.iter_mut().skip(2) { q.add = true; }
