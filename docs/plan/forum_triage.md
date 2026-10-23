@@ -43,6 +43,25 @@ teleport (HMDSOLO: the PS2 does it too).
 - The PDA shop shows the player's own view behind it with the vendor stand below (1de17e8: HMDSOLO
   1562747362307211324; the port drew the world along +x everywhere).
 
+**Fifth pass, same day:**
+- Decoys and mines ride the platforms they stand on (07209dc: HMDSOLO 1561271052456296448, Pokitaru's boats; the
+  decoy follows the moby its ground line hits, the mine records its carrier +0x4c). Not checked in game.
+- The map's ship star on other planets (1560410178598211727): the port captures the landmarks as the game does
+  (checked headless: leaving Kerwan records its ship slot at the pad) and every level's ship maps onto its picture;
+  saves from 0.3.4 and older never recorded the ship slot, so each planet shows it right once it has been left
+  on 0.3.5 or later. Answer the post with that.
+- The Decoy held in the glove (1561272266459709460, 0.3.4 screenshots): the shared glove hand offset be6e72f shipped
+  in 0.3.6; ask for a retest.
+
+**Needs more (fifth pass):** the map's dark bar at the top (1560493051481165875): reproduced headless; it is the
+picture's top 16 rows (a dark, partly transparent edge) once the pan reaches the clamp, which matches `fun_00205440`;
+whether the PS2 shows it depends on the colour table the picture is drawn with: needs a PS2 shot panned to the top.
+Sounds into the vendor (1561815960825102416): the group pause 0x1d is ported; the clip's loud stretch may be the
+screens' static: needs a listen. Gemlik's tower as a Heli-Pack source (1561918614456504340): traced headless, the
+hum's slot is freed when out of range and reused, as in the game; the port does not move sounds by the tower's offset
+yet, so the reported symptom needs the exact steps. Hoven's low clouds moving with the camera (1562008926613151774):
+the sky shells follow the camera in the game too; needs a PS2 clip.
+
 **Looked at in the fourth pass:** the "oof" at a wall (1562191825899360416): the rebound states 0x21 / 0x7a play no
 voice in SetState, the transitions or the physics, and start their animation at key 5, past its triggers: the port
 does the same; needs a PS2 clip of when the oof plays. The barriers' "bit" (1562755433498673152): each barrier row has
