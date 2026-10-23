@@ -944,7 +944,7 @@ type GameInputs<'w> = (Option<Res<'w, crate::gameplay::Persistent>>, Option<Res<
 fn tick_and_build(
     rt: Option<ResMut<HudRuntime>>,
     (ticks, frame_no): (Res<crate::determinism::GameTicks>, Res<crate::determinism::FrameNumber>),
-    hook: Res<Hud2dHook>,
+    (hook, dbg): (Res<Hud2dHook>, Option<Res<crate::debug_hud::DebugHud>>),
     scene: Res<SceneLayer>,
     mut meshes: ResMut<Assets<Mesh>>,
     (state, session, held): GameInputs,
@@ -1080,6 +1080,15 @@ fn tick_and_build(
     if !hook.replace_hud && !scene.hide_hud && !hud_off { crate::text_render::execute(&mut rt.hud2d, &mut st, &rt.glyphs, &rt.draws); }
     rt.hud2d.prims.extend(hook.prims.iter().copied());
     rt.hud2d.prims.extend(scene.prims.iter().copied());
+    // The inspect overlay (crate::debug_hud, `RC_DEBUG_HUD=1`, F3): small font with a shadow, from the top left.
+    if let (Some(p), true) = (play.as_deref(), dbg.as_deref().is_some_and(|d| d.on)) {
+        let g = rt.glyphs[rc_formats::font::Font::Small as usize];
+        for (i, l) in crate::debug_hud::lines(p).iter().enumerate() {
+            let y = 24 + 12 * i as i32;
+            crate::text_render::font_print(&mut rt.hud2d, &mut st, &g, rc_formats::font::Font::Small, 13, y + 1, 0x8000_0000, l.as_bytes(), l.len() as i32);
+            crate::text_render::font_print(&mut rt.hud2d, &mut st, &g, rc_formats::font::Font::Small, 12, y, 0x80ff_ffff, l.as_bytes(), l.len() as i32);
+        }
+    }
     // The main loop's card icon (`entry` 0x259c40) while the card is in use (an autosave, any save or load), drawn
     // last in every mode [L: also on the frame the page menu opens, which the game skips (0x1ba2ac)].
     if crate::saves::with_card(|c| c.in_use()).unwrap_or(false) {

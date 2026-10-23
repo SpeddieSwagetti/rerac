@@ -26,6 +26,7 @@
 //!   crate::gameplay
 //! - `RC_HUD=0`, `RC_HUD_DEMO=1`, `RC_HUD_TEXT`, `RC_HUD_HELP=<id>`, `RC_LANG` the HUD and its demos, crate::hud_render
 //! - `RC_SCREEN_TINT=<rgba hex>:<alpha hex>` one forced full-screen tint every frame (dev check), crate::screen_tint
+//! - `RC_DEBUG_HUD=1` the inspect overlay, F3 shows / hides it (position, facing, state, camera, the moby looked at), crate::debug_hud
 //! - `RC_MSAA=0|2|4|8` the Anti-aliasing option at start: Off or that multisampling (default: Original, the game's own softening passes), crate::graphics
 //! - `RC_SETTINGS_FILE=<path>` the port-settings file (`0` or empty: none), crate::render_settings;
 //!   `RC_SETTINGS_PAGE=0` no "Port Options" page in the Options menu, crate::menu_render
@@ -42,6 +43,7 @@ mod fly_cam;
 mod fx_draw;
 mod fog_state;
 mod screen_tint;
+mod debug_hud;
 mod game_camera;
 mod gameplay;
 mod gs_state;
@@ -216,6 +218,7 @@ fn main() -> anyhow::Result<()> {
     .add_plugins(sky_stars::SkyStarsPlugin)
     .add_plugins(fog_state::FogStatePlugin)
     .add_plugins(screen_tint::ScreenTintPlugin)
+    .add_plugins(debug_hud::DebugHudPlugin)
     .add_plugins(visibomb_view::VisibombViewPlugin)
     .add_plugins(hud_render::HudPlugin)
     // The game tick (hero, pad, follow camera) driving Ratchet and the view; RC_PLAY=0 keeps the fly camera only.

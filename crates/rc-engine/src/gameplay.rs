@@ -597,7 +597,7 @@ pub struct Play {
     /// `rc_game::hero::anim::HeroAnimCtl`).
     pub body_anim: Option<rc_game::hero::anim::BodyAnim>,
     /// Ratchet's moby (`0x1acc00[his gameplay instance]`) and animation instance.
-    hero_id: MobyId,
+    pub(crate) hero_id: MobyId,
     hero_k: Option<usize>,
     /// His class (index into `LevelMobys::classes` / `anim`), moby+0x2c scale, palette slots.
     class: usize,
@@ -2046,6 +2046,8 @@ fn debug_dump(
         "dump: tick {} hero mode {} state {:#x} pos ({:.2}, {:.2}, {:.2}) body {:?} hero moby {} ratchet moby {} back {}",
         p.game.counter, h.mode, h.state, hp[0], hp[1], hp[2], h.bodies.moby, h.hero_moby(p.hero_id), p.hero_id, h.back.is_some()
     );
+    // The inspect overlay's lines (crate::debug_hud): the facing, the camera, the moby looked at.
+    for l in crate::debug_hud::lines(&p) { println!("dump: {l}"); }
     let shown = p.entities.iter().filter(|&&e| vis.get(e).is_ok_and(|v| v.get())).count();
     println!("dump: engine Ratchet draw: cached hidden {}, {} of {} entities visible", p.ratchet_hidden, shown, p.entities.len());
     let mut visible: std::collections::HashMap<u32, (usize, usize)> = Default::default();
