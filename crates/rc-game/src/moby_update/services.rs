@@ -829,6 +829,10 @@ pub struct FxStats {
 #[derive(Clone, Debug)]
 pub struct Services {
     pub timing: Timing,
+    /// The class texture scrolls: `FUN_00263d90(class, s, t)` (level13 `0x25ac38`) adds (s, t) to every vertex ST of
+    /// the class's packets, shared by all its instances; the sum (wrapping s16) by class, drawn by `rc-engine` as the
+    /// records' ST offset ([`World::scroll_class_texture`]).
+    pub class_scroll: std::collections::HashMap<i16, (i16, i16)>,
     /// `0x15ed84`: the level (planet) number.
     pub level: u32,
     /// `0x15f5c4`: game mode (2 = cutscene; bolts hide).
@@ -1002,6 +1006,7 @@ impl Services {
     pub fn new() -> Services {
         Services {
             timing: Timing::NTSC,
+            class_scroll: Default::default(),
             level: 1,
             game_mode: 0,
             cheats: Default::default(),
@@ -1787,6 +1792,21 @@ impl<'a> World<'a> {
     }
 
     /// `release_voice_slot(slot)` guarded by the slot's owner ([`SoundSink::release`]).
+    /// A class's texture scroll step as its callers make it: the moby's counter + `d`, kept in 0..0x1000 (above it
+    /// − 0x1000, below 0 + 0x1000), and the class moved by the same step (`FUN_00263d90`, the S lane when `s`, else T).
+    /// Returns the new counter.
+    pub fn scroll_class_step(&mut self, o_class: i16, counter: i32, d: i32, s: bool) -> i32 {
+        let (n, step) = scroll_step(counter, d);
+        if s { self.scroll_class_texture(o_class, step, 0) } else { self.scroll_class_texture(o_class, 0, step) }
+        n
+    }
+
+    /// `FUN_00263d90(class, s, t)`: the class's texture moved by (s, t) in 1/4096 (every instance shares it).
+    pub fn scroll_class_texture(&mut self, o_class: i16, s: i32, t: i32) {
+        let e = self.svc.class_scroll.entry(o_class).or_insert((0, 0));
+        *e = (e.0.wrapping_add(s as i16), e.1.wrapping_add(t as i16));
+    }
+
     pub fn release_sound(&mut self, slot: i32, id: MobyId) {
         if let Some(s) = self.sound.as_deref_mut() { s.release(slot, id); }
     }
@@ -2479,6 +2499,28 @@ mod tests {
     use super::*;
     use crate::particles::type11;
 
+    /// HMDSOLO's Gemlik lasers (PS2 clip: their texture crawls): each field steps its counter by 0xc0 within 0..0x1000
+    /// and moves its class's texture by the same step (−0xf40 when the counter wraps); two fields of one class move it
+    /// twice a tick, as the game's shared class STs.
+    #[test]
+    fn class_texture_scroll_steps_like_the_game() {
+        assert_eq!(scroll_step(0, 0xc0), (0xc0, 0xc0));
+        assert_eq!(scroll_step(0xfc0, 0xc0), (0x80, -0xf40));
+        assert_eq!(scroll_step(0x20, -0x40), (0xfe0, 0xfc0));
+        let mut t = MobyTable::new(vec![], 4);
+        let hero = crate::hero::Hero::new();
+        let mut rng = crate::rng::Rng::new();
+        let classes = crate::moby_update::ClassTable::default();
+        let mut svc = Services::new();
+        let mut w = World::new(&mut t, &hero, &mut rng, &classes, &mut svc, 1);
+        let a = w.scroll_class_step(404, 0, 0xc0, true);
+        let b = w.scroll_class_step(404, 0xfc0, 0xc0, true);
+        w.scroll_class_step(172, 0x20, -0x40, false);
+        assert_eq!((a, b), (0xc0, 0x80));
+        assert_eq!(svc.class_scroll[&404], ((0xc0 - 0xf40) as i16, 0));
+        assert_eq!(svc.class_scroll[&172], (0, 0xfc0));
+    }
+
     /// A class's `HeroTeleport` turns Ratchet's moby rows to the new yaw when its stores land, before the camera calls
     /// (its `CameraResetBehindHero` snaps behind those rows): the warp pads on Gemlik left the camera facing the old way.
     #[test]
@@ -2624,4 +2666,11 @@ mod tests {
             assert_eq!(rc.state, rd.state, "throttle-only draws, load {load:?}");
         }
     }
+}
+
+/// A texture scroll counter's step (the callers of `FUN_00263d90`): (new counter, the class's step): `counter + d`, and
+/// when that leaves 0..=0x1000 both brought back by 0x1000.
+pub fn scroll_step(counter: i32, d: i32) -> (i32, i32) {
+    let n = counter + d;
+    if 0x1000 < n { (n - 0x1000, d - 0x1000) } else if n < 0 { (n + 0x1000, d + 0x1000) } else { (n, d) }
 }

@@ -1705,7 +1705,8 @@ fn drive_statics(p: &mut Play, lv: &crate::level_load::LoadedLevel, occl: &mut M
         // Moby +0x36, the occlusion word MobyProc tests: the game keeps 0 for "the loader's word" (the renderer
         // resolved it per instance) and writes 0x7f80 for a creature revived or moved elsewhere, a thrown crate, …
         occl.set_occlusion_word(ii, m.occlusion);
-        occl.look(ii, moby_render::MobyLook { alpha: m.alpha, mode: m.mode, glow: m.glow, shine_distance: m.b73, draw_dist: Some(m.draw_dist), late: None });
+        let scroll = p.svc.class_scroll.get(&m.o_class).copied().unwrap_or((0, 0));
+        occl.look(ii, moby_render::MobyLook { alpha: m.alpha, mode: m.mode, glow: m.glow, shine_distance: m.b73, draw_dist: Some(m.draw_dist), late: None, scroll });
         if let (Some(a), Some(k)) = (anim.as_deref_mut(), k) {
             a.drive(k, m.anim, p.svc.snapshots.get(id).and_then(|s| s.as_ref()), &m.joint_mods);
         }
@@ -2726,6 +2727,7 @@ fn upload_dynamic(
 ) {
     let m = &lv.mobys;
     let table = &p.game.mobys;
+    let scroll = &p.svc.class_scroll;
     let first = table.first_dynamic;
     let d = &mut p.dynamic;
     let ship = p.ship.map(|s| s.0);
@@ -2772,12 +2774,8 @@ fn upload_dynamic(
         let lights = m.lighting.as_ref().map(|l| light::moby_lights(&rows, &l.bank, mo.light, [mo.ambient[0], mo.ambient[1], mo.ambient[2]], 0x80));
         let mut rec = moby_render::extra_record(&model, lights.as_ref(), slot as u32 * d.pal_slots);
         moby_render::write_point_light(&mut rec, moby_render::point_light_merge(point_lights, sphere_centre(mo), &rows3(&mo.rows)));
-        // The pilot flame's class texture scroll (rc_game::moby_update::classes::pyro_glow, +0x04) [L: kept per moby; the
-        // game's is the class's, stepped by each flame].
-        if mo.o_class == rc_game::moby_update::classes::pyro_glow::CLASS {
-            let o = rc_game::hero::pyrocitor::glow_pv::SCROLL;
-            if let Some(b) = mo.pvars.get(o..o + 4) { moby_render::set_uv_scroll(&mut rec, 0, i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as i16); }
-        }
+        // The class's texture scroll (`FUN_00263d90`: the Pyrocitor's pilot flame, Gemlik's fields, Qwark's shield).
+        if let Some(&(s, t)) = scroll.get(&mo.o_class) { moby_render::set_uv_scroll(&mut rec, s, t); }
         let at = slot * moby_render::EXTRA_RECORD_SIZE;
         if d.records[at..at + rec.len()] != rec[..] {
             d.records[at..at + rec.len()].copy_from_slice(&rec);
