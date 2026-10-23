@@ -133,7 +133,8 @@ const TERMINAL_STATE: i32 = 0x59;
 const DISGUISED: u8 = 3;
 const BAIT_CLASS: i16 = 0x27b;
 const BARRIER_CLASS: i16 = 0x4e;
-const GUARD_WORDS: (u32, u32) = (0x14_1630, 0x16_13e8);
+/// The tick stamp of the guards' alert word 0x141630 (the word itself: `HeroFields::disguise_alert`).
+const GUARD_STAMP: u32 = 0x16_13e8;
 
 /// The turn sequences' angle curves (degrees by key frame): 10 0x1cc060, 11 0x1cbfe0, 12 0x1cc0e0.
 const TURN_RIGHT: [u32; 32] = [0x00000000, 0x4030c49c, 0x40ab74bc, 0x41049375, 0x4140b852, 0x4184ae14, 0x41abdf3b, 0x41d56c8b, 0x42006b85, 0x4216cccd, 0x422d9aa0, 0x42465d2f, 0x42615b23, 0x427c71aa, 0x428abd71, 0x42974189, 0x42a3e7f0, 0x42ae49ba, 0x42b40000, 0x42b62a7f, 0x42b794fe, 0x42b85a1d, 0x42b89581, 0x42b86354, 0x42b7de35, 0x42b726e9, 0x42b64ac1, 0x42b57333, 0x42b4b74c, 0x42b4322d, 0x42b40000, 0x42b40000];
@@ -1096,9 +1097,10 @@ fn tail(w: &mut World, id: MobyId) {
     let told = c::pi16(w, id, o::TOLD) != 0;
     let calm = c::pi32(w, id, o::ALERT) == 2;
     let (level, stamp) = if told { (2u16, w.counter as u32) } else if calm { ((c::pi16(w, id, o::WARY) != 0) as u16, w.counter as u32) } else { (2, 0) };
-    let (lw, sw) = GUARD_WORDS;
-    if stamp != w.svc.units.word(sw) || (w.svc.units.word(lw) as i16) < level as i16 {
-        w.svc.units.set_word(lw, level as u32);
+    // 0x141630 is the hero block's (the disguise's colour reads it: crate::hero::hologuise); its tick stamp 0x1613e8.
+    let sw = GUARD_STAMP;
+    if stamp != w.svc.units.word(sw) || w.hero_fields().disguise_alert < level as i16 {
+        w.hero_fields_mut().disguise_alert = level as i16;
         w.svc.units.set_word(sw, stamp);
     }
     let per = w.ticks(match level { 2 => 0x32, 1 => 0x5a, _ => 0xaa }).max(1);

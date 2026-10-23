@@ -1213,6 +1213,9 @@ pub struct HeroFields {
     pub ammo_picked: [i32; rc_formats::save_game::ITEM_COUNT],
     /// `0x1413ff = 1`: the hand item hidden (the gold bolt's pickup; `SetState` clears it on foot).
     pub hide_hand: bool,
+    /// 0x141630 (s16): the guards' alert on the disguise (0 calm, 1 suspicious, 2 alarmed): the guards 44 keep the
+    /// highest of the tick; the disguise's update reads and clears it (`crate::hero::hologuise`).
+    pub disguise_alert: i16,
     /// A class's screen marker this tick (`FUN_0020fb60`, `crate::targeting::Markers`: Gaspar's cannon 1201's
     /// crosshair), with the tick it was registered in.
     pub marker: Option<(u64, crate::targeting::Marker)>,
@@ -1357,6 +1360,7 @@ impl HeroFields {
             ammo: h.weapons.ammo,
             ammo_picked: [0; rc_formats::save_game::ITEM_COUNT],
             hide_hand: false,
+            disguise_alert: h.gadgets.disguise.alert,
             marker: None,
             water_level: f32::from_bits(h.water_level.0),
             dive_lock: h.swim.dive_lock,
@@ -1509,6 +1513,7 @@ impl HeroFields {
         }
         // After the calls: the gold bolt stores 0x1413ff after its HeroTeleport's SetState (which clears it).
         if self.hide_hand { h.f13ff = 1; }
+        h.gadgets.disguise.alert = self.disguise_alert;
         // The teleporter's store of 0x1413f5 after its HeroTeleport's SetState (which clears it).
         if let Some(v) = self.hero_hidden { h.f13f5 = v; }
     }
