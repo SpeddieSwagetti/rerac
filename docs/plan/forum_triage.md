@@ -1,5 +1,62 @@
 # Forum triage (bugs-and-qa)
 
+## 2026-10-23: every open post (92, read in full)
+
+Players: launcher 0.3.0 / 0.3.1, R&C1 runtime 0.3.6, R&C2 runtime 0.1.1. "main" = fixed after 0.3.6, ships with 0.3.7.
+Closed today: Kalebo III hovertrack water (idunnomate confirmed with a screenshot), the reverb after the Pokitaru
+teleport (HMDSOLO: the PS2 does it too).
+
+**Fixed on main (retest after 0.3.7):** the hollow / outline-only crosshairs (de9ae8b): everfeel 1562187260252921947,
+ZFPInTheAir 1562540111143501914. Launcher "Could not move the build into … os error 5" (Windows): retried rename, then
+copy (launcher main, unreleased): Glitch master 1561546349793648701, Kristian 1561920636593643580, Michan
+1558748783205027870.
+
+**Fixed on main today:** the Pyrocitor's flame and glow hide during a gold bolt's pickup (f52d5a7: HMDSOLO
+1562365950169452595); the Hologuise's lights turn red with the guards' alert (6b0b3ea: idunnomate 1562222540590416092,
+Spoober's list). **Same as the PS2 (the user checked):** the wrench coming out on every ledge climbed (HMDSOLO
+1562756703521480744; the ledge states set 0x1413f7 in the game too). **Looked at, needs the PS2's numbers:** the Glove
+of Doom glow (the port's formula is 0x2297b0's: the glove's +0xc0 rows and +0x10; the PCSX2 probe next); Clank's
+music on Orxon (the second of Ratchet's track is the transition's timing, which the PS2 hides behind the disc
+stream); Clank's ghost footsteps on Blarg (the lift hides Clank and stops his updates as the game does; needs a sound
+trace). Attachments of every open post: `work/forum/files/` (2026-10-23).
+
+**Partly fixed (our fix did not cover everything):**
+
+| post | what is left |
+|---|---|
+| 1561982401914339379 Glove of Doom eggs | egg fixed; its glow sprite slips out of the glove while running (HMDSOLO, PS2 clip) |
+| 1561235689503203388 Clank's music on Orxon | Clank's track plays, but Ratchet's plays for ~1 s first (HMDSOLO: not normal) |
+| 1560528077749227520 wrench reticle | see-through, but lacks the PS2's glass look (de9ae8b changes the alpha > 1 blend: retest) |
+| 1561090803533619351 FOV after the Pokitaru dogfight | crashing the jet while boosting keeps the FOV at respawn |
+| 1560410178598211727 map star | wrong / missing on planets other than the current one; Umbris does not fill yellow |
+| 1560493051481165875 map | the map changes shape when zooming, a black bar at its top |
+| 1562199509759565886 In-Level Movies | the level's NPC still shows next to the scene's when it is present in the level |
+| 1561231247613763677 Zoomerator turbo bar | entering a race with a weapon: no turbo bar, the weapon HUD stays (also Kalebo) |
+| 1561815960825102416 vendor | sounds keep playing in the vendor (the crosshair and the hydrant are as on the PS2) |
+| 1562010718641987654 Visibomb | PS2 clip given: the gun "spits out" the missile (visible a moment) before the green view |
+| 1562001348088561664 teleporters | PS2 clips given: the teleport sound is incomplete |
+
+**New since 2026-10-20 (R&C1 0.3.6):** Suck Cannon rapid fire / sounds; Ratchet's gloves poke through the Walloper
+(2 posts); Clank's mother's monitor text missing (Quartu); Oltanis Magneboots lift goes to the end of the track on a
+revisit; Ratchet takes out the wrench on every step he climbs; crackle from Oltanis's electric barriers and Hoven's
+helicopters; the Devastator's firing animation on ice; the PDA's background; crouching under the red electric robots;
+Oltanis's lightning (2 posts); the epilogue images; the Swingshot's reach on Aridia; vendor static on Veldin 2's
+platforms; the Pyrocitor's flame floats when picking up a gold bolt; Gemlik's camera does not follow Qwark's ship; Gemlik's
+lasers' motion; helmets (size, animation glitches); the Walloper / Thruster-Pack effects; the weapon sound at landing;
+space too close in the flight; Clank's footsteps keep playing; the Bomb Glove on Metropolis's train and its auto-aim
+on crates; Novalis's water flowers; the aerial turret HUD blur; the Hologuise alert lights and menu; the "oof" when
+bumping a wall; the many broken textures (Metropolis, Novalis, Rilgar / Blarg, Orxon, Batalia, Pokitaru: one shared
+cause); the waterfalls (Batalia, Pokitaru); the skies (Orxon, Gaspar).
+
+**R&C2 (rerac2 repo):** Conker's crash log 1563200701394321478; beasty23jk 1563186473824423976 (weapon wheel, only the
+Lancer, no ship on Oozla, vendor); Osvaldo 1563145419322818641 (video + list: extractor (launcher 0.3.1 fixed), scene
+bars, wrench throw, backflip, enemies, floating crates, pause menu, lighting, aim, thief room, weapon in scenes, crash
+at the level end).
+
+**Launcher / platform:** MS Edge (WebView2) data folder as another admin (Tactical); Open Data Folder on SteamOS
+(Gengear); Stuck on Running (no reply); controllers (DS4 Windows, PS5 over Bluetooth on macOS, Steam); Reshade; a
+black screen fixed by WGPU_BACKEND=dx12 (Marco); the SteamOS volume crash.
+
 Status: **2026-10-20, evening.** Section 0 is the current state of every open post (56), read in full on 2026-10-20 after
 the 0.3.5 retest round. Sections 1–4 are the earlier rounds (history: their numbering is what older commits cite).
 Players are on runtime 0.3.5 (launcher 0.2.1); "main" means fixed after 0.3.5, not released yet.
