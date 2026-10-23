@@ -622,6 +622,13 @@ impl Interact {
     pub fn register_talk_mobys(&mut self, slots: impl IntoIterator<Item = (MobyId, i32)>) {
         for (id, k) in slots { if k != -1 { self.talk_slots.insert(id, k); } }
     }
+
+    /// `0x179638[slot]`: the moby `MobyUnknown74Hook` put at global slot `slot` (its talk slot k + `0x1c4938[level]`,
+    /// unchecked against the level's range as the hook writes it). The In-Level Movies items name their hidden NPC so.
+    pub fn hook_moby(&self, level: u32, slot: i32) -> Option<MobyId> {
+        let base = *self.tables.base.get(level as usize)?;
+        self.talk_slots.iter().find(|&(_, &k)| base + k == slot).map(|(&id, _)| id)
+    }
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -981,6 +988,20 @@ mod tests {
         g.gold_weapons[10] = 1;
         g.gold_weapons[11] = 1;
         assert_eq!(g.spendable_gold_bolts(), 0);
+    }
+
+    /// The In-Level Movies items name the NPC their replay hides by global slot (`0x179638[slot]`): Kerwan's Big Al items
+    /// carry 20 / 21 / 24, his slots k plus Kerwan's first slot. The port matched k alone, so off level 0 the NPC stayed
+    /// beside the scene's actor (idunnomate's post).
+    #[test]
+    fn hook_moby_is_found_by_global_slot() {
+        let mut i = Interact { tables: Arc::new(TalkTables { base: vec![0, 4, 12, 20, 30], ..Default::default() }), ..Default::default() };
+        i.register_talk_mobys([(7, 0), (9, 1), (11, 4)]);
+        assert_eq!(i.hook_moby(3, 21), Some(9));
+        assert_eq!(i.hook_moby(3, 24), Some(11));
+        assert_eq!(i.hook_moby(3, 1), None, "k alone is not the slot");
+        assert_eq!(i.hook_moby(0, 4), Some(11));
+        assert_eq!(i.hook_moby(40, 4), None);
     }
 
     #[test]

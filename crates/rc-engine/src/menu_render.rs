@@ -1086,7 +1086,7 @@ fn post_fade_step(rt: &mut MenuRt, mm: &mut MenuMode, play: &mut Play, _gs: &mut
             // 0x1ba25c: the hook slot's moby (0x179638[slot]), hidden by the scene's start.
             let hook = rt.menu.as_mut().map_or(0, |m| std::mem::take(&mut m.replay_hook));
             if hook != 0 {
-                play.svc.cinematic.replay_hide = play.svc.interact.talk_slots.iter().find(|&(_, &k)| k == hook as i32).map(|(&id, _)| id);
+                play.svc.cinematic.replay_hide = play.svc.interact.hook_moby(play.svc.level, hook as i32);
             }
             // DialogStreamStart: the help box closed, 0x15f3fc = 1 (the scene ramps its own copy).
             play.svc.help.kill();
