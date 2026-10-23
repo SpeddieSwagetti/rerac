@@ -6,6 +6,26 @@ Players: launcher 0.3.0 / 0.3.1, R&C1 runtime 0.3.6, R&C2 runtime 0.1.1. "main" 
 Closed today: Kalebo III hovertrack water (idunnomate confirmed with a screenshot), the reverb after the Pokitaru
 teleport (HMDSOLO: the PS2 does it too).
 
+**Second pass, same day (all on main, retest after 0.3.7):**
+- Board races: the turbo meter shows, no ammo counter during the race, the counter follows switches after it (ff27e07,
+  7927cd4: HMDSOLO 1561231247613763677, Pamo13 on Kalebo).
+- The Epilogue's pictures on every planet (0ac02a1: idunnomate 1562597074946621551).
+- Level textures at the PS2's scale: negative tfrag UVs count half (c4a5008: HMDSOLO's Novalis cave 1562272075203354674;
+  likely the shared cause of the other broken-texture posts: Metropolis 1562299233376272434, Rilgar / Blarg
+  1560490367449829477, Batalia 1561607428439547965, Pokitaru sewers 1561292714690224178, Orxon 1561261776539226182).
+- In-Level Movies hide the level's NPC on every planet (76889fc: idunnomate 1562199509759565886).
+- The Visibomb view's scanlines (b4e0373: HMDSOLO 1562010718641987654; the "missile visible a moment" part needs a
+  PS2 clip: the launch and the camera cut are immediate in the decomp).
+- The teleporters' arrival sound (3d28008: HMDSOLO 1562001348088561664).
+
+**Open from the second pass:** the Walloper tilts out of the hand (1562347931296858242, 1562969762458243133: the
+attach matches the decomp; needs `work/scratch/hand_item_probe.py` on a PCSX2 savestate with the Walloper, and one with
+the Glove of Doom for its glow); the waterfalls flicker where they bend over the edge (Batalia 1560473204643074058,
+Pokitaru 1561285436104642710: two surfaces at one depth; needs the spot from the user, F9); the Devastator on ice
+swings out and up while firing (1562752763774107738: the weapon arm layer against the ice slide's arm pitch; needs a
+traced repro on Hoven); the map's black bar at the top and its shape while zooming (1560493051481165875); the Suck
+Cannon post (1562970122572791888) has a title only (ask what breaks).
+
 **Fixed on main (retest after 0.3.7):** the hollow / outline-only crosshairs (de9ae8b): everfeel 1562187260252921947,
 ZFPInTheAir 1562540111143501914. Launcher "Could not move the build into … os error 5" (Windows): retried rename, then
 copy (launcher main, unreleased): Glitch master 1561546349793648701, Kristian 1561920636593643580, Michan
