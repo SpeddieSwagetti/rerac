@@ -53,6 +53,18 @@ teleport (HMDSOLO: the PS2 does it too).
 - The Decoy held in the glove (1561272266459709460, 0.3.4 screenshots): the shared glove hand offset be6e72f shipped
   in 0.3.6; ask for a retest.
 
+**Sixth pass, same day:**
+- Quartu: Clank's "mother" types her words on the monitor (0bf67a0: §1.35 and the 0.3.6 report; the broadcast
+  director's draw callback `0x2eb6b8`; G-UI-025 closed).
+- Launcher (re-rac/launcher main 50abc36, unreleased): the Linux AppImage hands the file manager, the game and the
+  extractor the system's environment instead of its bundled library paths (Gengear, Open Data Folder on SteamOS).
+  The SteamOS volume crash with the controller (1561896146421686282) may share the cause (the game loaded the
+  AppImage's libraries); ask for a retest with the next launcher.
+- Already fixed, the doc was stale: Giant Clank red during his △ attack (§1.20, a54637f on 10-20: the tint only
+  reddens the world; checked headless with a forced tint).
+- Not changed: the launcher run elevated under another admin account (Tactical 1562570286564376576): WebView2 cannot
+  write its data folder in that setup; running it normally works (as the post says).
+
 **Needs more (fifth pass):** the map's dark bar at the top (1560493051481165875): reproduced headless; it is the
 picture's top 16 rows (a dark, partly transparent edge) once the pan reaches the clamp, which matches `fun_00205440`;
 whether the PS2 shows it depends on the colour table the picture is drawn with: needs a PS2 shot panned to the top.
