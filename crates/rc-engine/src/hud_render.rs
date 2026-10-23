@@ -1080,13 +1080,32 @@ fn tick_and_build(
     if !hook.replace_hud && !scene.hide_hud && !hud_off { crate::text_render::execute(&mut rt.hud2d, &mut st, &rt.glyphs, &rt.draws); }
     rt.hud2d.prims.extend(hook.prims.iter().copied());
     rt.hud2d.prims.extend(scene.prims.iter().copied());
-    // The inspect overlay (crate::debug_hud, `RC_DEBUG_HUD=1`, F3): small font with a shadow, from the top left.
-    if let (Some(p), true) = (play.as_deref(), dbg.as_deref().is_some_and(|d| d.on)) {
-        let g = rt.glyphs[rc_formats::font::Font::Small as usize];
-        for (i, l) in crate::debug_hud::lines(p).iter().enumerate() {
-            let y = 24 + 12 * i as i32;
-            crate::text_render::font_print(&mut rt.hud2d, &mut st, &g, rc_formats::font::Font::Small, 13, y + 1, 0x8000_0000, l.as_bytes(), l.len() as i32);
-            crate::text_render::font_print(&mut rt.hud2d, &mut st, &g, rc_formats::font::Font::Small, 12, y, 0x80ff_ffff, l.as_bytes(), l.len() as i32);
+    // The inspect overlay (crate::debug_hud, `RC_DEBUG_HUD=1`; F3 on / off, F4 the page, F8 the repro line): small font
+    // with a shadow, a column from the top left, the mobys page's labels at their screen points.
+    if let (Some(p), Some(d)) = (play.as_deref(), dbg.as_deref().filter(|d| d.on)) {
+        use crate::debug_hud::{self as dh, Page};
+        let font = rc_formats::font::Font::Small;
+        let g = rt.glyphs[font as usize];
+        let text = |hud: &mut Hud2d, st: &mut crate::text_render::TextState, x: i32, y: i32, l: &str, rgba: u32| {
+            crate::text_render::font_print(hud, st, &g, font, x + 1, y + 1, 0x8000_0000, l.as_bytes(), l.len() as i32);
+            crate::text_render::font_print(hud, st, &g, font, x, y, rgba, l.as_bytes(), l.len() as i32);
+        };
+        let mut col = vec![format!("DEBUG {}  (F3 hide  F4 page  F8 repro)", d.page.name())];
+        match d.page {
+            Page::Player => col.extend(dh::lines(p)),
+            Page::Mobys => {
+                let labels = dh::moby_labels(p);
+                for (x, y, l) in &labels { text(&mut rt.hud2d, &mut st, *x as i32 - 12, *y as i32, l, 0x8060_ffff); }
+                col.extend(dh::moby_lines(p, labels.len()));
+            }
+            Page::Sound => match audio.as_deref_mut() {
+                Some(a) => col.extend(dh::sound_lines(a.system(), p)),
+                None => col.push("no audio (RC_AUDIO=0)".into()),
+            },
+        }
+        for (i, l) in col.iter().enumerate() { text(&mut rt.hud2d, &mut st, 12, 24 + 12 * i as i32, l, if i == 0 { 0x8080_ffff } else { 0x80ff_ffff }); }
+        if let Some((n, _)) = d.note.as_ref().filter(|(_, u)| frame_no.0 < *u) {
+            text(&mut rt.hud2d, &mut st, 12, H - 24, n, 0x8060_ff60);
         }
     }
     // The main loop's card icon (`entry` 0x259c40) while the card is in use (an autosave, any save or load), drawn
