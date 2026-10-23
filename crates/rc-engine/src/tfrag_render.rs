@@ -245,9 +245,10 @@ fn build_storage(level: &LoadedLevel) -> (Vec<u8>, Vec<u8>, Vec<u32>, Vec<u32>, 
             slots.f(b.x).f(b.y).f(b.z).u(u32::from_le_bytes(c)).u(p1).u(p2).u(tier).u(normal);
         }
         for (v, e) in t.vertex_info.iter().enumerate() {
-            // GS ST with Q = 1: S and T are normalised texture coordinates. The VU emits (s_float - 2048,
-            // t_float - 2048) where s_float = 2048 + s/4096 (STROW 0x45000000, tfrag_rac1.md §2.2).
-            vinfos.f(e.s as f32 / 4096.0).f(e.t as f32 / 4096.0).u(ns + t.position_index(v) as u32);
+            // GS ST with Q = 1: S and T are normalised texture coordinates, as VU1 makes them from the STROW sum
+            // (negative values count half: `TfragVertexInfo::st`, tfrag_rac1.md §2.2).
+            let [s, tc] = e.st();
+            vinfos.f(s).f(tc).u(ns + t.position_index(v) as u32);
             match t.lod_link(v) {
                 Some(l) => vinfos.u(tier_code(l.tier)).u(nv + l.parent1_vinfo as u32).u(ns + l.parent2_position as u32),
                 None => vinfos.u(TIER_NONE).u(0).u(0),

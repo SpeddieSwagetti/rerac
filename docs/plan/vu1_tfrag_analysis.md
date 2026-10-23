@@ -47,7 +47,7 @@ Sign note (inference): since F increases with p.w and GS F=0xFF means "no fog", 
 
 ## 3. Texture coordinates
 
-Vertex-info x,y are loaded as floats (`lq.xy`, 2048+s/4096). L102/L112/L127: `st = (s − qw657.z, t − qw657.z)` (subz, l.1451/1791), Q lane forced to 1.0 (`addw.z vf13,vf00,vf00`+`addz.z`, l.1219–1223, or `maxw vf24,vf00,vf00`+`move.z`, l.1437/1478), then `st.xyz *= Q` (l.1466). So packet ST = (s'·Q, t'·Q, Q) — GS-perspective-correct, qw657.z must be 2048.0. Texture switch = tag qw660 + verbatim 5-qw ad-gif copy (TEX0 already patched by the EE). The VU also reads **the w lane of ad-gif qw 1 (TEX1)** as a float (l.988 `lq.w vf29, 1(vi08)`; FB l.135) and in the fallback program uses it as the UV bias instead of qw657.z (FB l.141–166) — the data must hold 2048.0 there; worth confirming in the extracted files.
+Vertex-info x,y are loaded as floats (`lq.xy`, the bits `0x45000000 + s` of the signed unpack: 2048 + s/4096 for s >= 0, 2048 + s/8192 below 0). L102/L112/L127: `st = (s − qw657.z, t − qw657.z)` (subz, l.1451/1791), Q lane forced to 1.0 (`addw.z vf13,vf00,vf00`+`addz.z`, l.1219–1223, or `maxw vf24,vf00,vf00`+`move.z`, l.1437/1478), then `st.xyz *= Q` (l.1466). So packet ST = (s'·Q, t'·Q, Q) — GS-perspective-correct, qw657.z must be 2048.0. Texture switch = tag qw660 + verbatim 5-qw ad-gif copy (TEX0 already patched by the EE). The VU also reads **the w lane of ad-gif qw 1 (TEX1)** as a float (l.988 `lq.w vf29, 1(vi08)`; FB l.135) and in the fallback program uses it as the UV bias instead of qw657.z (FB l.141–166) — the data must hold 2048.0 there; worth confirming in the extracted files.
 
 ## 4. Colours
 
@@ -97,7 +97,7 @@ if (P1.w < K666.w && P2.w < K666.w) { use parent1's info entirely }
 
 // emit
 Q  = K656.x / c.w
-st = float3(s - 2048, t - 2048, 1) * Q     // s,t already s/4096+2048
+st = float3(s - 2048, t - 2048, 1) * Q     // s,t already 2048 + s/4096 (s >= 0) or 2048 + s/8192 (s < 0)
 xyz = c.xyz * Q + K661.xyz
 w   = clamp(c.w + K661.w, K656.y, K656.z)  // fog F = floor(w) & 0xff
 // clip: if any of last 3 verts has |c.xyz*K662.xyz| > |c.w*K662.w| -> drop triangle

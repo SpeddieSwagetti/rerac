@@ -194,7 +194,7 @@ The five lists are raw VIF1 command lists: a sequence of 32-bit VIFcodes each op
 Two things fall out of this:
 
 * Index bytes are converted, during the unpack, into **absolute VU quadword addresses of vertex-info entries**. On disk they are plain 8-bit indices into the concatenated vertex-info array (common ‖ lod01 ‖ lod0), because those three arrays are contiguous in VU memory starting at `vertex_info_common_addr`. Since they are u8, a tfrag can have at most 256 vertex-info entries.
-* `0x45000000` added to the UV fields is the classic integer→float conversion trick: 0x45000000 is the IEEE bit pattern of 2048.0f, whose mantissa LSB has value 2⁻¹², so `float(0x45000000 + s) == 2048.0f + s/4096`. The VU then subtracts 2048.0 to obtain `s/4096`. **[inferred]** — Wrench never explains the constant, but it is exactly consistent with `vu_fixed12_to_float(s) = s / 4096` in `vif.h`, which `high.cpp` uses to decode UVs.
+* `0x45000000` added to the UV fields is the integer→float conversion trick: 0x45000000 is the IEEE bit pattern of 2048.0f, the vertex-info unpack is V4_16 **signed** (all 76,986 retail unpacks), and STMOD 1 adds the row as an integer, so VU1 loads `f32::from_bits(0x45000000 + s)` and subtracts 2048.0 (qw657.z, `subz`; vu1_tfrag_analysis.md §4). For s >= 0 that is `s / 4096` (mantissa step 2⁻¹²); **for s < 0 the sum drops below 2048.0's exponent, where the step is 2⁻¹³, so the result is `s / 8192`**. Wrench's `vu_fixed12_to_float(s) = s / 4096` is wrong for the 27% of retail vertices with a negative S or T: those textures show at half the frequency on the PS2 (`TfragVertexInfo::st`).
 
 ### 2.3 Command order per list
 

@@ -171,15 +171,27 @@ pub struct TfragPosition {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Pod, Zeroable)]
 pub struct TfragVertexInfo {
-    /// 0x00: texture S, signed 1/4096 fixed point.
+    /// 0x00: texture S (see [`TfragVertexInfo::st`]).
     pub s: i16,
-    /// 0x02: texture T, signed 1/4096 fixed point.
+    /// 0x02: texture T (see [`TfragVertexInfo::st`]).
     pub t: i16,
     /// 0x04: VU qword offset (from `positions_common_addr`) of the second LOD parent's position; position index = `parent / 2`. Meaningless for common entries.
     pub parent: i16,
     /// 0x06: VU qword offset of this vertex's own position; position index = `vertex / 2`.
     pub vertex: i16,
 }
+
+impl TfragVertexInfo {
+    /// The GS texture coordinates (S, T) VU1 emits for this vertex (Q = 1): the signed V4_16 unpack adds the STROW
+    /// row 0x45000000 to the sign-extended value as an integer, VU1 loads that word as a float and subtracts 2048.0
+    /// (qw657.z; [`st_of`]). Not a plain s / 4096: below 0 the sum leaves 2048.0's exponent, so negative values
+    /// count half (27% of retail vertices have one).
+    pub fn st(&self) -> [f32; 2] { [st_of(self.s), st_of(self.t)] }
+}
+
+/// One tfrag texture coordinate as VU1 computes it: `f32::from_bits(0x45000000 + s) - 2048.0`, i.e. `s / 4096` for
+/// s >= 0 and `s / 8192` below 0 (the word's exponent drops to 1024's, whose mantissa step is 2^-13).
+pub fn st_of(s: i16) -> f32 { f32::from_bits(0x4500_0000u32.wrapping_add(s as i32 as u32)) - 2048.0 }
 
 /// Strip command record (V4_8 signed, 4 bytes). Spec 2.6.
 #[repr(C)]
@@ -789,6 +801,20 @@ mod tests {
     fn gif(lo: i32, hi: i32, address: u8) -> AdGif { AdGif { data_lo: lo, data_hi: hi, address, pad: [0; 7] } }
     fn adgifs(tex: i32, k: i32, mmin: i32, wms: i32, wmt: i32) -> TfragAdGifs {
         TfragAdGifs { tex0: gif(tex, 0, 6), tex1: gif(k, mmin, 0x14), clamp: gif(wms, wmt, 8), miptbp1: gif(0, 0, 0x34), miptbp2: gif(0, 0, 0x36) }
+    }
+
+    /// VU1's ST: the STROW sum read as a float minus 2048.0. Positive values step by 1/4096, negative ones by 1/8192
+    /// (HMDSOLO's Novalis cave roof: the port's plain s / 4096 drew its texture twice as dense as the PS2).
+    #[test]
+    fn st_counts_negative_values_half() {
+        assert_eq!(st_of(0), 0.0);
+        assert_eq!(st_of(4096), 1.0);
+        assert_eq!(st_of(32767), 32767.0 / 4096.0);
+        assert_eq!(st_of(-1), -1.0 / 8192.0);
+        assert_eq!(st_of(-8192), -1.0);
+        assert_eq!(st_of(-32768), -4.0);
+        let v = TfragVertexInfo { s: 2048, t: -4096, parent: 0, vertex: 0 };
+        assert_eq!(v.st(), [0.5, -0.5]);
     }
 
     #[test]
