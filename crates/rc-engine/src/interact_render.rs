@@ -288,15 +288,15 @@ pub fn after_tick(
                 let mut out = VendorOut::default();
                 let mut v = Vendor::open(t, gs, vendor.is_none(), &mut out);
                 // OpenVendorMenu(0) (the PDA): `CreateMoby(0xb)` at the camera + (3.8, 0, −1.5) (gp−0x5ba0, 0x161068), +0x32
-                // = 0x40, rotation (0, 0, π), `MobyBuildMatrix`, state 3; the view: rows identity at the camera.
+                // = 0x40, rotation (0, 0, π), `MobyBuildMatrix`, state 3. `DrawWorld_Mode5` 0x2b4020 grabs the world from
+                // the player's camera as the backdrop (`GrabFrameSnapshot`) and then draws the vendor with rows identity at
+                // the camera: here the world stays on that camera and the vendor stands in its frame ([`remote_vendor`]).
                 let vendor = match vendor {
                     Some(id) => Some(id),
                     None => {
                         let id = remote_vendor(play);
                         vr.remote_moby = id.is_some();
-                        let pos = play.game.camera.out.pos;
-                        let one = |k: usize| std::array::from_fn::<Pf, 4, _>(|i| if i == k { Pf::f(1.0) } else { Pf::ZERO });
-                        vr.remote_cam = Some(CameraView { pos, euler: [Pf::ZERO; 4], rows: [one(0), one(1), one(2)], class: 0, flyby_phase: 0 });
+                        vr.remote_cam = Some(play.game.camera.out);
                         id
                     }
                 };
@@ -414,9 +414,14 @@ fn joint_points_posed(class: &MobyAnimClass, state: &moby_anim::AnimState, snap:
 /// `OpenVendorMenu(0)`'s remote vendor moby (module docs of `rc_game::hero::pda`): class 11 at the camera + (3.8, 0, −1.5),
 /// +0x32 = 0x40, rotation (0, 0, π), its matrix built, state 3. None when the class is not on the level or the table is
 /// full (the game would crash on a null moby).
+///
+/// The game draws it with the view's rows identity over a still of the world from the player's camera
+/// (`DrawWorld_Mode5`); the port draws the world live from that camera, so the offset and the rotation are taken in the
+/// camera's frame (forward, left, up): 3.8 ahead, 1.5 down, facing it (rows −forward, −left, up; kept: mode 0x100). The
+/// same picture, except that scenery nearer than the vendor can cover it (vendor_render's module doc).
 fn remote_vendor(play: &mut Play) -> Option<MobyId> {
     let classes = play.classes.clone();
-    let cam = play.game.camera.out.pos;
+    let (cam, r) = (play.game.camera.out.pos_f32(), play.game.camera.out.rows_f32());
     let mut w = rc_game::moby_update::services::World::new(&mut play.game.mobys, &play.game.hero, &mut play.game.rng, &*classes, &mut play.svc, play.game.counter);
     classes.info(vendor::VENDOR_CLASS)?;
     let id = w.create_moby(vendor::VENDOR_CLASS)?;
@@ -424,8 +429,12 @@ fn remote_vendor(play: &mut Play) -> Option<MobyId> {
         let m = w.mm(id);
         m.draw_dist = 0x40;
         let pw = m.position[3];
-        m.position = [cam[0].to_f32() + 3.8, cam[1].to_f32(), cam[2].to_f32() - 1.5, pw];
-        m.rotation = [0.0, 0.0, std::f32::consts::PI, m.rotation[3]];
+        let at = |k: usize| cam[k] + r[0][k] * 3.8 - r[2][k] * 1.5;
+        m.position = [at(0), at(1), at(2), pw];
+        m.rotation = [0.0, 0.0, rc_game::moby_update::interact::add_rot(r[0][1].atan2(r[0][0]), std::f32::consts::PI), m.rotation[3]];
+        let row = |v: [f32; 3], k: f32| [v[0] * k, v[1] * k, v[2] * k, 0.0];
+        (m.rows[0], m.rows[1], m.rows[2]) = (row(r[0], -1.0), row(r[1], -1.0), row(r[2], 1.0));
+        m.mode |= rc_game::moby_runtime::mode::KEEP_ROWS;
         m.state = 3;
     }
     w.build_matrix(id);
@@ -573,7 +582,8 @@ pub fn vendor_frame(
                 // ids are lost in the decompile].
                 let popup_place = match (v.popup.as_ref(), v.tables.classes.popup.as_ref()) {
                     (Some(p), Some(pc)) => {
-                        let rows = vendor::euler_rows([m.rotation[0], m.rotation[1], m.rotation[2]]);
+                        // The remote vendor keeps camera-frame rows (`remote_vendor`): its own.
+                        let rows = if vr.remote_moby { [0, 1, 2].map(|i| [m.rows[i][0], m.rows[i][1], m.rows[i][2]]) } else { vendor::euler_rows([m.rotation[0], m.rotation[1], m.rotation[2]]) };
                         let r4 = [[rows[0][0], rows[0][1], rows[0][2], 0.0], [rows[1][0], rows[1][1], rows[1][2], 0.0], [rows[2][0], rows[2][1], rows[2][2], 0.0], [0.0; 4]];
                         let scale = classes.info(vendor::POPUP_CLASS).map_or(1.0, |i| i.scale);
                         let pp = joint_points(pc, &p.anim, p.snapshot.as_ref(), &vr.popup_lists, &r4, pos, scale);
