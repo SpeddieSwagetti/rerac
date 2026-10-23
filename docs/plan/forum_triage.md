@@ -18,6 +18,23 @@ teleport (HMDSOLO: the PS2 does it too).
   PS2 clip: the launch and the camera cut are immediate in the decomp).
 - The teleporters' arrival sound (3d28008: HMDSOLO 1562001348088561664).
 
+**Third pass, same day (all on main, retest after 0.3.7):**
+- Novalis' water flowers move aside for Ratchet (c0d308c: HMDSOLO 1562265530981679114; the float's step limit is from
+  the tick's start, the port's was from its placed point).
+- Class texture scrolls drawn on every moby (0b0ad1f: Gemlik's lasers / fields crawl, HMDSOLO 1562356617012580372; also
+  Qwark's shield; the Pyrocitor's flame now through the same system).
+- Oltanis' lightning shows (df1947a: HMDSOLO 1562745815846363156 and idunnomate's intro 1562165341138845859: the alpha
+  cut ignored the strike timer). HMDSOLO asks for the lightning to return after leaving the planet as a ReRAC extra
+  (the original stops it for good): the user's call.
+- Same as the original by the decomp: the Blaster destroying Gemlik's towers (1562123434522189886: the shot is the hit's
+  attacker in the game too, and the towers count hits from above their top).
+
+**Open from the third pass:** the Hologuise's menu animation (1562218129155690506: reproduced: the worn props stay on
+the sentry; `fun_002250f0` has no visible test, needs a PS2 clip); crouching under Hoven's arcs (1562749075747512370:
+Ratchet's collision is two fixed cylinders the game never changes; the PS2 clip also loses health: needs a closer
+comparison); the camera not following Qwark's falling ship (1562362129145790494: Gemlik's scene 2, the scene camera's
+tracking).
+
 **Open from the second pass:** the Walloper tilts out of the hand (1562347931296858242, 1562969762458243133: the
 attach matches the decomp; needs `work/scratch/hand_item_probe.py` on a PCSX2 savestate with the Walloper, and one with
 the Glove of Doom for its glow); the waterfalls flicker where they bend over the edge (Batalia 1560473204643074058,
