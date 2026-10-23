@@ -38,8 +38,7 @@
 //!
 //! Native `f32`; the rand draws are the game's. **Inferred [L]**: the list 0x1b0cb0 is the table's decoys not in
 //! states 5 / 6 (the port has no writer of the game's list; the order of equally old decoys could differ); the owner
-//! is "the hand holds the Decoy Glove" (the glove is not a table moby); a decoy on a moving platform does not ride
-//! it (`FUN_002752c0`, 0x13f64c: never set in the port); the burst's debris (`0x2c4c20`) and the pop's type-5 puffs
+//! is "the hand holds the Decoy Glove" (the glove is not a table moby); the burst's debris (`0x2c4c20`) and the pop's type-5 puffs
 //! are records only (particle type 5: G-PRT-001); the gold decoy (0x13e539: its burst's colour shift and area hit) reads the mirrored gold table.
 
 use crate::moby_runtime::{MobyId, MobyTable};
@@ -244,12 +243,17 @@ pub fn update(w: &mut World, id: MobyId) {
         FLYING => fly(w, id),
         STANDING | BURST_WALL => stand(w, id),
         DEFLATE => {
+            // `GroundHeight(0.5, pos, 0)`; a hit on a moby: ridden (`FUN_002752c0`).
+            let on = ground_moby(w, id);
+            ride(w, id, on);
             let r = c::dec_timer_pvar_s16(w, id, pv::TIMER);
             let wrapped = w.m(id).anim.flags & 2 != 0;
             if wrapped { w.mm(id).anim.speed = 0.0; }
             if r != 0 || wrapped { w.mm(id).state = SHRINK; }
         }
         SHRINK => {
+            let on = ground_moby(w, id);
+            ride(w, id, on);
             let m = w.mm(id);
             m.scale -= m.scale * 0.02;
             let class_scale = w.class_scale(w.m(id).o_class).to_f32();
@@ -447,7 +451,10 @@ fn stand(w: &mut World, id: MobyId) {
     let pos = c::pos(w, id);
     let g = w.ground_height(Pf::f(0.5), pv(pos), 0).to_f32();
     if g == 0.0 { return; }
-    let surface = w.coll_line(pv([pos[0], pos[1], pos[2] + 0.5, 0.0]), pv([pos[0], pos[1], 0.01, 0.0]), 2, None).map_or(-1, |o| o.surface_id());
+    let ground = w.coll_line(pv([pos[0], pos[1], pos[2] + 0.5, 0.0]), pv([pos[0], pos[1], 0.01, 0.0]), 2, None);
+    let surface = ground.map_or(-1, |o| o.surface_id());
+    // The moby the last ground line hit (0x1742d8): the decoy rides it at the end.
+    let mut on = ground.and_then(|o| o.moby);
     if pop_surface(w, id, surface) { return; }
     if g + 0.02 < pos[2] {
         let mut vel = c::pv4(w, id, pv::VEL);
@@ -458,6 +465,7 @@ fn stand(w: &mut World, id: MobyId) {
         let a = [q[0], q[1], q[2] + 0.5, 0.0];
         let b = [q[0], q[1], 0.01, 0.0];
         if let Some(o) = w.coll_line(pv(a), pv(b), 2, None) {
+            on = o.moby;
             if q[2] < o.point[2] {
                 w.mm(id).position[2] = o.point[2];
                 c::set_pv4(w, id, pv::VEL, [0.0; 4]);
@@ -469,6 +477,23 @@ fn stand(w: &mut World, id: MobyId) {
     } else {
         c::set_pv4(w, id, pv::VEL, [0.0; 4]);
     }
+    ride(w, id, on);
+}
+
+/// `GroundHeight(0.5, pos, 0)`'s hit moby (0x1742d8) when it hits (the deflate and shrink states).
+fn ground_moby(w: &World, id: MobyId) -> Option<MobyId> {
+    let pos = c::pos(w, id);
+    w.coll_line(pv([pos[0], pos[1], pos[2] + 0.5, 0.0]), pv([pos[0], pos[1], 0.01, 0.0]), 2, None).and_then(|o| o.moby)
+}
+
+/// `if (0x1742d8) FUN_002752c0(decoy, 0x1742d8, pos, rot, pos, rot)`: a decoy on a carrier (Pokitaru's boats, lifts)
+/// moves and turns with it this tick (`triggers::carried`).
+fn ride(w: &mut World, id: MobyId, on: Option<MobyId>) {
+    let Some(k) = on.and_then(|k| w.table.mobys.get(k)).and_then(crate::moby_update::triggers::carrier) else { return };
+    let m = w.mm(id);
+    let (q, r) = crate::moby_update::triggers::carried(&k, [m.position[0], m.position[1], m.position[2]], [m.rotation[0], m.rotation[1], m.rotation[2]]);
+    m.position[..3].copy_from_slice(&q);
+    m.rotation[..3].copy_from_slice(&r);
 }
 
 /// The burst (health below 0): a jitter of ±0.5 on (0.5, 0.5, 0.7) for the debris' drift, `SpawnBeamExplosion(0, 0,

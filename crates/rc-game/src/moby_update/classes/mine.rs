@@ -38,7 +38,7 @@
 //!
 //! **Pvars** (0x80): +0x00 velocity, +0x10 / +0x20 the preview's point and normal (the reticle), +0x30 the owner (the
 //! glove: 1 here), +0x34 s16 the arming / preview timer, +0x36 s16 a new mine in the glove, +0x38 / +0x3c spin rates
-//! (drawn at the creation), +0x40 the seek speed, +0x48 the hop timer, +0x4c the platform (never set in the port),
+//! (drawn at the creation), +0x40 the seek speed, +0x48 the hop timer, +0x4c the platform it rides (the moby + 1),
 //! +0x50 s16 in water, +0x52 s16 the hop phase, +0x54 the target (+1), +0x58 the seek's life, +0x5c the creation
 //! frame, +0x60 / +0x64 the wobble phases, +0x68 the loop sound slot, +0x6c / +0x70 / +0x74 the bob's amplitude,
 //! phase and start frame, +0x78 lured by the Taunter.
@@ -49,8 +49,7 @@
 //! which the game leaves as the stack held them, are 0); the held mine's frame is `Euler(π, 0, 0) ×
 //! MobyAttachToJoint(glove, 0)`, the glove's joint-0 matrix kept by `gloves::update` step 2 (the glove is not a table
 //! moby); the release's wall test starts at Ratchet (at the
-//! launch height; the disassembly's `lq`); the mines' list 0x1b0c30 is the table's mines; a mine on a moving platform
-//! does not ride it (0x13f64c: never set in the port); the blob shadow `0x26eec8(0.25)` is `crate::shadows::blob`; the gold
+//! launch height; the disassembly's `lq`); the mines' list 0x1b0c30 is the table's mines; the blob shadow `0x26eec8(0.25)` is `crate::shadows::blob`; the gold
 //! mine (0x13e531, item 17: the seek range ×2, the blast and its puffs ×1.5, their colours shifted, class sound 3, the
 //! light 0x20a8e0) reads the mirrored gold table (`Weapons::gold`); the global 0x1613d0 that blows every mine up (0 in level01's data; its writer is
 //! not in the ported code) is not read.
@@ -58,6 +57,7 @@
 use crate::moby_runtime::{mode, MobyId, MobyTable};
 use crate::moby_update::creature::{self as c, attack, fx, walker, V};
 use crate::moby_update::services::{self as sv, pvar as p, HitTemplate, World};
+use crate::moby_update::triggers;
 use crate::ps2v::Pf;
 use crate::targeting as tg;
 
@@ -88,6 +88,7 @@ pub mod pv {
     pub const SPIN_B: usize = 0x3c;
     pub const SPEED: usize = 0x40;
     pub const HOP_T: usize = 0x48;
+    pub const PLATFORM: usize = 0x4c;
     pub const WATER: usize = 0x50;
     pub const HOP: usize = 0x52;
     pub const TARGET: usize = 0x54;
@@ -411,6 +412,12 @@ fn release_loop(w: &mut World, id: MobyId) {
     c::set_pi32(w, id, pv::SOUND, -1);
 }
 
+/// The platform it rides (+0x4c holds the moby + 1).
+fn platform(w: &World, id: MobyId) -> Option<MobyId> {
+    let t = c::pi32(w, id, pv::PLATFORM);
+    (t > 0).then(|| (t - 1) as MobyId).filter(|&m| m < w.table.mobys.len())
+}
+
 /// The target (+0x54 holds the moby + 1).
 fn target(w: &World, id: MobyId) -> Option<MobyId> {
     let t = c::pi32(w, id, pv::TARGET);
@@ -420,23 +427,48 @@ fn target(w: &World, id: MobyId) -> Option<MobyId> {
 /// Landed (`LAB_002c0a38`): the ground, the seek, the wobble; the velocity becomes the move made.
 fn landed(w: &mut World, id: MobyId, old: V) {
     let pos = c::pos(w, id);
-    let g = w.ground_height(Pf::f(0.5), pvq(pos), 0).to_f32();
-    let mut drop = false;
-    if w.m(id).state & SEEKING == 0 {
-        if DT2 * 40.0 <= pos[2] - g {
-            w.mm(id).state = OUT;
-            release_loop(w, id);
-            let mut v = c::pv4(w, id, pv::VEL);
-            v[2] = 0.0;
-            c::set_pv4(w, id, pv::VEL, v);
-            c::set_pi16(w, id, pv::TIMER, 120);
-            drop = true;
-        } else {
-            w.mm(id).position[2] = g;
-            c::set_pi16(w, id, pv::TIMER, 0);
+    // `GroundHeight(0.5, pos, 0)` and the moby its line hit (0x1742d8).
+    let hit = w.coll_line(pvq([pos[0], pos[1], pos[2] + 0.5, pos[3]]), pvq([pos[0], pos[1], 0.01, pos[3]]), 2, None);
+    let g = hit.map_or(0.0, |h| h.point[2]);
+    let on_carrier = hit.and_then(|h| h.moby).filter(|&k| triggers::carrier(w.m(k)).is_some());
+    let fall = |w: &mut World, id: MobyId| {
+        w.mm(id).state = OUT;
+        release_loop(w, id);
+        let mut v = c::pv4(w, id, pv::VEL);
+        v[2] = 0.0;
+        c::set_pv4(w, id, pv::VEL, v);
+        c::set_pi16(w, id, pv::TIMER, 120);
+        c::set_pi32(w, id, pv::PLATFORM, 0);
+    };
+    match platform(w, id) {
+        None => {
+            if w.m(id).state & SEEKING == 0 {
+                if DT2 * 40.0 <= pos[2] - g {
+                    fall(w, id);
+                } else {
+                    w.mm(id).position[2] = g;
+                    c::set_pi16(w, id, pv::TIMER, 0);
+                    // Settled on a carrier (`FUN_00275290(0x1742d8)`): it rides that one from now on.
+                    if let Some(k) = on_carrier { c::set_pi32(w, id, pv::PLATFORM, k as i32 + 1); }
+                }
+            }
         }
+        // Its platform gone: it blows up; still over a carrier: carried by its platform (`FUN_002752c0`); else
+        // off it, falling.
+        Some(k) if w.m(k).is_deleted() => {
+            w.mm(id).cmd = 1;
+            c::set_pi32(w, id, pv::PLATFORM, 0);
+        }
+        Some(k) => match (on_carrier, triggers::carrier(w.m(k))) {
+            (Some(_), Some(c)) => {
+                let m = w.mm(id);
+                let (q, r) = triggers::carried(&c, [m.position[0], m.position[1], m.position[2]], [m.rotation[0], m.rotation[1], m.rotation[2]]);
+                m.position[..3].copy_from_slice(&q);
+                m.rotation[..3].copy_from_slice(&r);
+            }
+            _ => fall(w, id),
+        },
     }
-    let _ = drop;
     let live = target(w, id).filter(|&t| { let m = w.m(t); !m.is_deleted() && m.mode & mode::TARGETABLE != 0 });
     if live.is_none() && w.m(id).state & SEEKING != 0 { stop_seek(w, id); }
     if let (Some(t), true) = (live, w.m(id).state & SEEKING != 0) {
