@@ -87,6 +87,11 @@ pub fn all_visible(play: Option<&Play>) -> bool { occlusion_fallback(play) != 0 
 /// The record `0x21b9f8` draws with: 0x16cc30's bands (alpha 0x0f) on levels 2, 5–8 and 10, else 0x16cc00's (0x17).
 pub fn band_alpha(level: u32) -> u32 { if level == 2 || level == 10 || (5..9).contains(&level) { 0x0f } else { 0x17 } }
 
+/// The record's band rows (+0x10: 2, drawn) and the gap after them (+0x20: 3, its colour +0x24 is 0): 2 rows of every 5.
+/// (+0x0c / +0x1c, 0x1f, are the ALPHA registers' high words, not heights.)
+pub const BAND_ROWS: u32 = 2;
+pub const BAND_PERIOD: u32 = 5;
+
 /// The overlay's full-screen pass (module docs; `assets/shaders/missile_view.wgsl`).
 #[derive(Component, ExtractComponent, Clone, Copy, Default, PartialEq, ShaderType)]
 pub struct MissileViewOverlay {
@@ -146,7 +151,7 @@ fn overlay(mut commands: Commands, play: Option<Res<Play>>, cams: MainCam) {
                 Some(v) => (v.physical_position.as_vec2(), v.physical_size.as_vec2()),
                 None => (Vec2::ZERO, cam.physical_target_size().map_or(Vec2::new(1024.0, 832.0), |s| s.as_vec2())),
             };
-            MissileViewOverlay { vp: Vec4::new(pos.x, pos.y, size.x, size.y), band: UVec4::new(band_alpha(level), rc_game::hud::SCREEN_H as u32, 34, 31) }
+            MissileViewOverlay { vp: Vec4::new(pos.x, pos.y, size.x, size.y), band: UVec4::new(band_alpha(level), rc_game::hud::SCREEN_H as u32, BAND_PERIOD, BAND_ROWS) }
         });
         match (want, have) {
             (Some(w), Some(h)) if *h == w => {}

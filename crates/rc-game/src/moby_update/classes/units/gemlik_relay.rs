@@ -14,7 +14,7 @@
 //! | `0x2f8880` | 667 | [`relay_update`] |
 //! | `0x2f8a78` | 674 / 677 / 680 | [`field_update`] |
 //!
-//! [L] The texture scroll (`0x25ac38`) is kept in +0x14 only (no moby texture scroll in the renderer).
+//! The texture scroll (`0x25ac38`): the counter +0x14 and the class's scroll ([`World::scroll_class_texture`]).
 
 use crate::moby_runtime::{mode, MobyId};
 use crate::moby_update::creature as c;
@@ -153,7 +153,7 @@ pub fn field_update(w: &mut World, id: MobyId) {
         _ => {}
     }
     w.mm(id).alpha = (c::pf(w, id, 0x10) * 20.0) as i32 as u8;
-    let mut s = c::pi32(w, id, 0x14) + 0xc0;
-    if 0x1000 < s { s -= 0x1000; } else if s < 0 { s += 0x1000; }
+    let class = w.m(id).o_class;
+    let s = w.scroll_class_step(class, c::pi32(w, id, 0x14), 0xc0, true);
     c::set_pi32(w, id, 0x14, s);
 }

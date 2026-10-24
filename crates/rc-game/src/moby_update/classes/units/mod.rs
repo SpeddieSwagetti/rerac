@@ -1104,6 +1104,7 @@ pub const PORTS: &[UnitPort] = &[
     UnitPort { unit: "U503 1388", level: quartu_story::REFERENCE_LEVEL, func: quartu_story::GRABBER_FN, classes: &quartu_story::GRABBER_CLASSES, update: quartu_story::grabber_update, joints: &[] },
     UnitPort { unit: "U511 1469", level: quartu_story::REFERENCE_LEVEL, func: quartu_story::HELP_FN, classes: &quartu_story::HELP_CLASSES, update: quartu_story::help_update, joints: &[] },
     UnitPort { unit: "U506 1419", level: quartu_story::REFERENCE_LEVEL, func: quartu_story::BROADCAST_FN, classes: &quartu_story::BROADCAST_CLASSES, update: quartu_story::broadcast_update, joints: &[] },
+    UnitPort { unit: "U506 1419 captions", level: quartu_story::REFERENCE_LEVEL, func: quartu_story::CAPTIONS_FN, classes: &[], update: empty::update, joints: &[] },
     UnitPort { unit: "U529 1377", level: kalebo_story::REFERENCE_LEVEL, func: kalebo_story::UPDATE_FN, classes: &kalebo_story::CLASSES, update: kalebo_story::update, joints: &kalebo_story::CLASSES },
     UnitPort { unit: "U561 1428", level: fleet_story::REFERENCE_LEVEL, func: fleet_story::UPDATE_FN, classes: &fleet_story::CLASSES, update: fleet_story::update, joints: &[] },
     UnitPort { unit: "U31 834", level: veldin_story::REFERENCE_LEVEL, func: veldin_story::UPDATE_FN, classes: &veldin_story::CLASSES, update: veldin_story::update, joints: &[] },
@@ -1654,6 +1655,7 @@ pub fn frame_callback(w: &mut World, i: u16, id: MobyId) {
         Some((oltanis_wind::REFERENCE_LEVEL, oltanis_wind::DRAW_FN)) => oltanis_wind::frame(w, id),
         Some((oltanis_zapper::REFERENCE_LEVEL, oltanis_zapper::PIECE_DRAW_FN)) => oltanis_zapper::piece_frame(w, id),
         Some((umbris_beast_fx::REFERENCE_LEVEL, f @ (umbris_beast_fx::BEAM_FN | umbris_beast_fx::GROUND_FN))) => umbris_beast_fx::frame(w, f, id),
+        Some((quartu_story::REFERENCE_LEVEL, quartu_story::CAPTIONS_FN)) => quartu_story::captions_frame(w, id),
         _ => {}
     }
 }

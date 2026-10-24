@@ -391,3 +391,51 @@ pub fn beam_quads_at(table: &MobyTable, id: MobyId, off: usize) -> Option<FxQuad
         .collect();
     Some(FxQuads { fx: BEAM_FX, additive: true, subtract: false, quads })
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::moby_runtime::Moby;
+    use crate::moby_update::services::{SoundEvent, SoundSink};
+    use crate::rng::Rng;
+
+    /// What the pads tell the sound layer, in order.
+    #[derive(Default)]
+    struct Sink(Vec<String>);
+    impl SoundSink for Sink {
+        fn play_class_sound(&mut self, ev: &SoundEvent, _rng: &mut Rng) -> i32 {
+            self.0.push(format!("play {} of moby {}", ev.index, ev.moby));
+            0
+        }
+        fn camera_reset_at(&mut self, pos: [f32; 3]) { self.0.push(format!("camera at {pos:?}")); }
+    }
+
+    fn pad(x: f32, partner: i32) -> Moby {
+        let mut m = Moby { o_class: CLASSES[0], pvars: vec![0; 0x48], state: 3, ..Moby::default() };
+        m.position = [x, 0.0, 0.0, 1.0];
+        p::set_i32(&mut m.pvars, 0, partner);
+        p::set_i32(&mut m.pvars, 0x40, -1);
+        p::set_i32(&mut m.pvars, 0x44, -1);
+        m
+    }
+
+    /// HMDSOLO's PS2 clips: the arrival sound (class sound 1 on the partner pad) follows the departure's. `HeroTeleport(…,
+    /// 1)` resets the camera behind Ratchet before that sound starts, so `SoundSlotAlloc` measures it from the
+    /// destination; the port's listener was still at the departure pad and refused it as out of range.
+    #[test]
+    fn the_arrival_sound_starts_after_the_camera_moved() {
+        let mut t = MobyTable::new(vec![pad(0.0, 1), pad(300.0, 0)], 4);
+        let hero = crate::hero::Hero::new();
+        let mut rng = Rng::new();
+        let classes = crate::moby_update::ClassTable::default();
+        let mut svc = Services::new();
+        let mut sink = Sink::default();
+        {
+            let mut w = World::new(&mut t, &hero, &mut rng, &classes, &mut svc, 1);
+            w.sound = Some(&mut sink);
+            teleport(&mut w, 0);
+        }
+        assert_eq!(sink.0, vec!["camera at [300.0, 0.0, 0.2]".to_string(), "play 1 of moby 1".to_string()]);
+        assert_eq!((t.mobys[0].state, t.mobys[1].state), (1, 4));
+    }
+}

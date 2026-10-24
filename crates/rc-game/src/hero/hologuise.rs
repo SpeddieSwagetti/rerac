@@ -29,7 +29,7 @@
 //! | 0x229440 body 3 | three glow quads `0x2781d0(0.2, 0.08, 0x1410a0 + 16k, 0x141634)` | ported ([`Disguise::glow_points`], `Callback::DisguiseGlow`, drawn by `rc-engine` fx_draw) |
 //! | SetState prologue | body 3 and the new state outside 0x53..0x59, 0x65..0x67, 0, 1: `0x22cd18` → leave the body; body 0: 0x141630 = 0 | ported (`states::set_state`) |
 //! | 0x2405a0 | `SetState(0)` in a body: body 0 → `SetState(0, 1)`, body 3 → `SetState(0x53, 1)` | ported (`bodies::body_idle`) |
-//! | the guards' alert 0x141630 | written by the guards 44 (L15 `0x2979d8`, L17 `0x29f8d8`: 1 suspicious, 2 alarmed) | NOT ported (the guards are G-CLS-001; the field is [`Disguise::alert`], 0 until they write it) |
+//! | the guards' alert 0x141630 | written by the guards 44 (L15 `0x2979d8`, L17 `0x29f8d8`: 1 suspicious, 2 alarmed) | ported (`classes::units::quartu_guard`'s tail through `HeroFields::disguise_alert`) |
 //! | `0x236738` in body 3 | Ratchet's moby placed at the hero, then `PlayClassSound(index, flags, Ratchet)` (every hero voice of the body's update) | ported ([`DisguiseVoices`], [`queue_voices`]: played by the tick after the body's update [L: after the update instead of at the call]) |
 //! | sounds, particles, lights, stats, bolts, save flags | Ratchet's voices 0x18 / 0x19; no particle, light, stat, bolt or save write | — |
 //!

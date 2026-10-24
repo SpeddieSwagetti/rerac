@@ -2,9 +2,9 @@
 //! `0x2d0fc8`, `crate::hero::pyrocitor`): a small flickering flame at the nozzle, drawn with alpha 0x50.
 //!
 //! **Update**: gone with its owner (the owner's state byte 0, or 0xf0.. deleted) → `DeleteMoby`; the owner's hidden bit
-//! (mode bit 0: the first-person view hides the item) copied; hidden and not animated (mode |= 0x41) while the slot has
+//! (mode bit 0: the first-person view or a gold bolt's pickup hides the item) copied; hidden and not animated (mode |= 0x41) while the slot has
 //! been ready for less than 25 ticks; the class's texture scroll steps by −0xc0 (wrapping in 0..0x1000:
-//! `FUN_00263d90(class, 0, d)`, kept at +0x04; drawn by `rc-engine` as the record's ST offset); scale = class scale ×
+//! `FUN_00263d90(class, 0, d)`: the counter at +0x04 and the class's scroll, `World::scroll_class_texture`); scale = class scale ×
 //! 0.5 (+0x0c) × `randf(0.5, 1)` (one draw a tick); its spin +0x44 += 0.5 rad (`FUN_002731d0`: the angle wrapped).
 //! The owner writes its rows and position every tick (the item update). Standard `f32`.
 //!
@@ -58,8 +58,10 @@ pub fn update(w: &mut World, id: MobyId) {
     if m.mode & 1 != hidden { m.mode = (m.mode & !1) | hidden; }
     let ready = i16::from_le_bytes([m.pvars[pv::READY], m.pvars[pv::READY + 1]]) as i32;
     if ready < crate::hero::physics::ticks(25) { m.mode |= 0x41; }
-    let mut s = i32::from_le_bytes(m.pvars[pv::SCROLL..pv::SCROLL + 4].try_into().unwrap()) - 0xc0;
-    if 0x1000 < s { s -= 0x1000; } else if s < 0 { s += 0x1000; }
+    let counter = i32::from_le_bytes(m.pvars[pv::SCROLL..pv::SCROLL + 4].try_into().unwrap());
+    let class = m.o_class;
+    let s = w.scroll_class_step(class, counter, -0xc0, false);
+    let m = w.mm(id);
     m.pvars[pv::SCROLL..pv::SCROLL + 4].copy_from_slice(&s.to_le_bytes());
     let k = f32::from_le_bytes(m.pvars[pv::SCALE..pv::SCALE + 4].try_into().unwrap());
     let r = w.rng.randf(0.5, 1.0);

@@ -17,7 +17,7 @@
 //! | 0x2ece00 | 3: position += velocity (+0x10), velocity ·= 0.995; `coll_sphere(2, pos, 0, m)`: the world or a moby not Qwark's own (0x191, 0x184..0x18c, 399, 400) → the velocity reflected (`0x20b148` = L01 `0x221570`), → 4; rotation += the spins (+0x30..), the spins ·= 0.999; out of [10, 1013] → deleted; `FastDecTimer(+0x40)` out and not drawn → deleted | [`part_update`] |
 //! | 0x2ece00 | 4: `SpawnBeamExplosion(2, 4, 4, 2, 9, 1, 15, m, v, m, 10, 3, 16, −1, 1)`, `DeleteMoby` | [`part_update`] |
 //! | 0x2e8438 | `CreateMoby(0x160)`: draw 0x3ff, update 0xff, drawn, state 0, +0xbc 0; at Qwark; +0x00 = Qwark, +0x04 = 0; mode \| 0x200; matrix; Ratchet's light word / ambient (`0x272078`); scale = class scale | [`spawn_shield`] |
-//! | 0x2e84d8 | 0: collision on, → 1. 1: scale eases to 4 × class, +0x04 += 0.02·SPEED, at 1 → 2. 2: the same scale; Qwark gone → 3. 3: scale eases to 1 ×, +0x04 −= 0.02·SPEED, at 0 → 4. 4: `DeleteMoby`. Alpha = `trunc(+0x04·60)`; the class's texture scroll −0x40 a tick (wrapping 0..0x1000: `0x263d90`) | [`shield_update`] (the scroll: NOT drawn, the renderer has no moby texture scroll) |
+//! | 0x2e84d8 | 0: collision on, → 1. 1: scale eases to 4 × class, +0x04 += 0.02·SPEED, at 1 → 2. 2: the same scale; Qwark gone → 3. 3: scale eases to 1 ×, +0x04 −= 0.02·SPEED, at 0 → 4. 4: `DeleteMoby`. Alpha = `trunc(+0x04·60)`; the class's texture scroll −0x40 a tick (wrapping 0..0x1000: `0x263d90`) | [`shield_update`] ([`World::scroll_class_texture`]) |
 //! | 0x2c13b0 | `CreateMoby(0x52)`: update / draw 0xff, drawn, state 0; +0x24 target, +0x20 owner; position, rotation; +0x2c speed, +0x38 top speed, +0x28 life, turn rates 0; velocity = the owner's pvars +0xc0..+0xcf (Qwark's: the part pointers, denormal floats: 0); sequence ≠ 1 → `MobyAnimBlend(1, 0, 10)`; position += velocity; +0x10 = the target's position; class scale; matrix; `PartType26Spawn(500000, m, 0x60808080, life, 0)` | [`spawn_missile`] |
 //! | 0x2c1528 | not shot (`MobyGetHitMessage(0xa30000)` none, or by nothing, or by another 82): scale eases to the class's; the trail (95's, larger: types 44 80000 / 21 40000, without the spark's blend patch); the target gone or moved 3 → the turn rates brake (`0x270cc0`, 4π·dt², 8π·dt); else toward it (the player's ship led: `(d / (speed + 24))·its speed` along its heading, unless the owner is in state 5), within 60° the speed eases to the top speed (0.05), the turns (`0x270cc0`) | [`missile_update`] |
 //! | 0x2c1528 | life > `ticks(120)`: velocity = polar(speed, yaw, −pitch); else blended in by (life / `ticks(120)`)²; position += it; out of [2, 1021] → deleted | [`missile_update`] |
@@ -270,9 +270,9 @@ pub fn shield_update(w: &mut World, id: MobyId) {
         }
         _ => {}
     }
-    // `0x263d90(class, 0, d)`: the class's texture scroll, kept for the renderer (not drawn yet).
-    let s = c::pi32(w, id, shield_pvo::SCROLL) - 0x40;
-    let s = if 0x1000 < s { s - 0x1000 } else if s < 0 { s + 0x1000 } else { s };
+    // `0x263d90(class, 0, d)`: the class's texture scroll (T).
+    let class = w.m(id).o_class;
+    let s = w.scroll_class_step(class, c::pi32(w, id, shield_pvo::SCROLL), -0x40, false);
     c::set_pi32(w, id, shield_pvo::SCROLL, s);
 }
 

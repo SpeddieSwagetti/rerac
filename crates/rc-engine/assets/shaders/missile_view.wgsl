@@ -3,8 +3,8 @@
 // `DrawWorld` (level01 0x21a1b8) draws `0x21b9f8` at its end while 0x15f30c is set: with the record 0x16cc00
 // (0x16cc30 on levels 2, 5–8, 10) it sets ALPHA_1 = 0x42 (A = 0, B = Cs, C = As, D = Cd: Cv = Cd − (Cs·As >> 7), a
 // subtraction, COLCLAMP to 0) and draws `DrawRectOverlay` rectangles over the frame: the whole frame in 0x80500050
-// (red and blue down by 0x50: the green look), then from y = 0 bands of 31 rows in 0x17ffffff (0x0fffffff) with 3
-// rows between them (every channel down by 46 / 30). As underwater_tint.wgsl: the pixel re-encoded to the GS byte,
+// (red and blue down by 0x50: the green look), then from y = 0 bands of 2 rows (+0x10) in 0x17ffffff (0x0fffffff)
+// with 3 rows (+0x20) between them, whose colour +0x24 is 0 (not drawn): every channel down by 46 / 30 on 2 rows of 5. As underwater_tint.wgsl: the pixel re-encoded to the GS byte,
 // blended in integers, written back.
 
 #import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput

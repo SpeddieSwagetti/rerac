@@ -11,8 +11,8 @@
 //! | `0x2ed4a8` | the field (module doc) | [`update`] |
 //! | `0x2ed158` | the touch | [`touch`] |
 //!
-//! Read from the level13 decomp. [L] The texture scroll (`0x25ac38` = L01 `0x263d90`) is kept in +0x0c only: the
-//! renderer has no moby texture scroll; the hit's direction register is not set by the caller (zero here). Native
+//! Read from the level13 decomp. The texture scroll (`0x25ac38` = L01 `0x263d90`): the counter +0x0c and the class's
+//! scroll ([`World::scroll_class_texture`]). [L] The hit's direction register is not set by the caller (zero here). Native
 //! `f32`.
 
 use crate::moby_runtime::MobyId;
@@ -105,7 +105,7 @@ pub fn update(w: &mut World, id: MobyId) {
         }
         _ => {}
     }
-    let mut s = c::pi16(w, id, o::SCROLL) as i32 + 0xc0;
-    if 0x1000 < s { s -= 0x1000; } else if s < 0 { s += 0x1000; }
+    let class = w.m(id).o_class;
+    let s = w.scroll_class_step(class, c::pi16(w, id, o::SCROLL) as i32, 0xc0, true);
     c::set_pi16(w, id, o::SCROLL, s as i16);
 }

@@ -186,7 +186,6 @@ pub fn update(hero: &mut Hero, table: &mut MobyTable, _anim: &dyn super::anim::A
     // (`MobyAttachToJoint(glove, 0)`): the held mine's frame (`0x2bfe40`) is it turned by π about x.
     {
         let it = hero.items.slot.item.as_ref().unwrap();
-        let rows: [[f32; 3]; 3] = [0, 1, 2].map(|i| [0, 1, 2].map(|k| f32::from_bits(it.rows[i][k])));
         let j0 = class.chains.first().filter(|c| !c.is_empty())
             .map(|chain| moby_anim::evaluate_chains(&class.anim, &it.anim, it.snapshot.as_ref(), &[chain.as_slice()])[0]);
         let base = j0.map_or(from_f32x3(it.position), |j| super::melee::list_point(&j, &it.rows, it.position, it.scale));
@@ -199,8 +198,10 @@ pub fn update(hero: &mut Hero, table: &mut MobyTable, _anim: &dyn super::anim::A
             },
             |j| moby_anim::attach_matrix(&j, &it.rows, it.position, it.scale),
         );
+        // `fun_0020cca8(glove, 0, M)` (`MobyAttachToJoint`) then `fun_001f9d20(o, M)` = M0·o.x + M1·o.y + M2·o.z (o.w = 0):
+        // the offset turns with joint 0's frame, not the glove moby's rows (the mine stuck out of the glove's front).
         let o = row.hand;
-        let off: [f32; 3] = std::array::from_fn(|k| rows[0][k] * o[0] + rows[1][k] * o[1] + rows[2][k] * o[2]);
+        let off: [f32; 3] = std::array::from_fn(|k| mtx[0][k] * o[0] + mtx[1][k] * o[1] + mtx[2][k] * o[2]);
         let g = &mut hero.weapons.glove;
         g.hand = add3(to_f32x3(base), off);
         g.hand_mtx = mtx;
@@ -368,7 +369,10 @@ fn bomb_aim(hero: &mut Hero, table: &mut MobyTable, env: &ItemEnv, b: MobyId) ->
             (Some(c), Some(coll)) => line_world(coll, from_f32x3(c), from_f32x3(p), targeting::BOMB_GLOVE.los_flags).is_none(),
             _ => true,
         };
-        if let Some(t) = targeting::aim_search(&targeting::BOMB_GLOVE, table, env.targets, launch, yawf, clear) {
+        // The search's first reference is the launch point's yaw (the facing turned by 0xbeb953df, −20.7°: the
+        // glove hand), not the facing: the cone leans right.
+        let reference = crate::moby_update::creature::add_rot(yawf, f32::from_bits(0xbeb9_53df));
+        if let Some(t) = targeting::aim_search(&targeting::BOMB_GLOVE, table, env.targets, launch, reference, clear) {
             target = t.point;
             hero.weapons.aim = Some(t.id);
             let m = &table.mobys[t.id];
@@ -393,10 +397,12 @@ fn create_bomb(hero: &mut Hero, table: &mut MobyTable, env: &ItemEnv, hits: &mut
     Some(b)
 }
 
-/// `0x2c27a8`: the bomb released at the launch point (plus Ratchet's displacement while grinding); a wall between
-/// Ratchet (at the launch height) and the launch point explodes it there.
+/// `0x2c27a8`: the bomb released at the launch point (plus Ratchet's displacement 0x13f450 while grinding or standing
+/// on a carrier, `FUN_00275290(0x13f64c)`: the Metropolis train); a wall between Ratchet (at the launch height) and the
+/// launch point explodes it there.
 fn release_bomb(hero: &mut Hero, table: &mut MobyTable, env: &ItemEnv, _hits: &mut dyn HitSink, _rng: &mut Rng, b: MobyId, t: Throw) {
-    let grind = if hero.group == 0xf { Some(to_f32x3(hero.disp)) } else { None };
+    let carried = hero.ground_moby.and_then(|g| table.mobys.get(g)).is_some_and(|m| crate::moby_update::triggers::platform_block(m).is_some());
+    let grind = if hero.group == 0xf || carried { Some(to_f32x3(hero.disp)) } else { None };
     bomb::release(&mut table.mobys[b], t.launch, grind);
     let r = &table.mobys[env.hero_moby];
     let from = [r.position[0], r.position[1], t.launch[2]];

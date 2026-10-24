@@ -9,9 +9,10 @@
 //!   39th between its neighbours), lighting up one after another over `ticks(10)` (their timers start at
 //!   `−ticks(10)·i/40` and count up); three branches from points 5..21 of 16 steps 1..10 long, turning up to 40° a
 //!   step on their side (within 80°), their timers from their points'; it lasts `ticks(rand_range(56, 90))` (a thunder
-//!   sound, `0x294028(0)`: the level def 2 + 0, `World::play_level_def`); after the first `ticks(10)` it flickers (one sine over 20 ticks: the alpha cut
-//!   `(255 + 128·sin) & 0xff`) and, while the cut is under 50, sparks fly off the strike point (three pairs of type
-//!   53 a tick). The last five points ease straight.
+//!   sound, `0x294028(0)`: the level def 2 + 0, `World::play_level_def`); after the first `ticks(10)` the alpha cut is
+//!   `255·(1 − timer / (duration − ticks(10)))` (0x161cb4 the strike's timer: full brightness, fading to nothing as it
+//!   runs out) plus a flicker for the first `ticks(60)` (one sine over 20 ticks, ±128, wrapping as a byte) and, while
+//!   the cut is under 50, sparks fly off the strike point (three pairs of type 53 a tick). The last five points ease straight.
 //! * **The draw** (`0x2edc18`): the bolt as camera-facing ribbons (FX 0x2d grey 0x7f7f7f, FX 0x2c red 0x7f4040 at
 //!   half the alpha and four times the width), 5 wide narrowing to 0.5 (`2t − t²`); the branches as ribbons sideways
 //!   in the bolt's frame, three quarters as wide, ×0.95 a step; all additive.
@@ -241,7 +242,8 @@ pub fn strike(w: &mut World, id: MobyId) {
             st(w).wave = 0;
         }
         let s = st(w);
-        let base = (0.0 * s.inv * -255.0 + 255.0) as i32;
+        // The cut grows from 0 (full brightness) to 255 as the strike's timer 0x161cb4 runs out: the bolt fades.
+        let base = (s.timer as f32 * s.inv * -255.0 + 255.0) as i32;
         s.cut = (base + s.wave as i32) as u8;
         if s.sound {
             s.sound = false;
@@ -350,3 +352,40 @@ pub fn frame(w: &mut World, _id: MobyId) {
 
 /// Level14 `0x2edc18` (module doc).
 pub fn fx_quad_groups(_table: &MobyTable, svc: &Services, _id: MobyId) -> Vec<FxQuads> { svc.units.oltanis_lightning.quads.clone() }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::moby_runtime::{Moby, MobyTable};
+    use crate::rng::Rng;
+
+    /// HMDSOLO's Oltanis post (the bolts barely showed): the cut follows the strike's timer, 0 (full brightness) when
+    /// the bolt has lit up and 255 when it runs out; the port's placeholder 0 for the timer kept it at 255, so the bolt
+    /// only showed through the flicker.
+    #[test]
+    fn the_bolt_is_bright_after_it_lit_up_and_fades_out() {
+        let mut t = MobyTable::new(vec![Moby { o_class: CLASSES[0], pvars: vec![0; 0x40], ..Moby::default() }], 4);
+        let hero = crate::hero::Hero::new();
+        let mut rng = Rng::new();
+        let classes = crate::moby_update::ClassTable::default();
+        let mut svc = Services::new();
+        svc.units.oltanis_lightning.ground = [0.0, 0.0, 0.0, 1.0];
+        svc.units.oltanis_lightning.sky = [0.0, 0.0, 350.0, 1.0];
+        let mut cuts = Vec::new();
+        for tick in 1..=200 {
+            let mut w = World::new(&mut t, &hero, &mut rng, &classes, &mut svc, tick);
+            strike(&mut w, 0);
+            let s = &w.svc.units.oltanis_lightning;
+            if !s.active { break; }
+            cuts.push((s.timer, s.start, s.cut, s.wave));
+        }
+        let fade = Services::new().ticks(FADE);
+        let lit = cuts.iter().find(|&&(t, st, _, _)| t < st - fade).expect("the bolt lights up");
+        // Right after the fade-in: the cut near 0 (whatever the flicker adds, as a byte).
+        let base = (lit.0 as f32 / (lit.1 - fade) as f32 * -255.0 + 255.0) as i32;
+        assert_eq!(lit.2, (base + lit.3 as i32) as u8);
+        assert!(base < 10, "{lit:?}");
+        let last = cuts.last().unwrap();
+        assert!(last.2 > 200, "fading out at the end: {last:?}");
+    }
+}

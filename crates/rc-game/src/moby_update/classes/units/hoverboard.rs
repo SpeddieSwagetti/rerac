@@ -25,7 +25,7 @@
 //! | the best time / score records 0x15ee58 / 0x15ee68 (+4 on level 16) and +1000 bolts for each new one; 0x15ee38 / 0x15ee3c + 1 | `0x254608` | [`apply`] ([`Records`]) |
 //! | move record 30 bumped | `0x254058` | [`apply`] |
 //! | the race HUD's slots 5 / 7 (lap / place, time) | `0x24cee8` | [`apply`] (`Services::hud`) |
-//! | the boost meter slot 0x10, `update_resource_counter` | `0x24cee8`, `0x254608` | logged (G-LVL-007) |
+//! | the boost meter slot 0x10; the weapon show held off (`0x264298`) and `update_resource_counter` | `0x24cee8`, `0x254608` | [`apply`] (`HudState::weapon_hide`, `HudState::resource_counter`) |
 
 use crate::hero::hoverboard::{BoardCmd, BoardWorld, Member};
 use crate::moby_runtime::{MobyId, MobyTable};
@@ -159,6 +159,9 @@ pub fn apply(w: &mut World) {
                 let r = crate::hud::Request::race_meter(w.ticks(0x11));
                 if on { w.svc.hud.queue(r) } else { w.svc.hud.set_flags(r, 0) }
             }
+            // The weapon show held off for the race (the boost meter keeps slot 0) and opened again at its end.
+            BoardCmd::Hud("0x264298") => w.svc.hud.weapon_hide(),
+            BoardCmd::Hud("update_resource_counter") => w.svc.hud.resource_counter(),
             BoardCmd::Hud(what) => w.svc.unported(what),
             BoardCmd::Help { msg, rec } => { w.svc.help.request(msg, rec); }
         }

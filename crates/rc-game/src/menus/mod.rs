@@ -105,6 +105,9 @@ pub const DATA_LABELS: &[u32] = &[
     pause::map_page::GOLD_TOTALS, pause::media::label::SCROLL_LISTS[0], pause::media::label::SCROLL_LISTS[1],
     pause::media::label::SCROLL_LISTS[2], pause::media::label::SCROLL_LISTS[3], pause::media::label::SCROLL_LISTS[4],
     pause::media::label::GOODIES_TEXTS,
+    // The Epilogue's language table (its image widget's flag 0x1000): unmapped, every level but 01 read other words
+    // there and the picture index left the TOC fields (idunnomate's post: an empty frame on Veldin 2).
+    pause::media::label::LANG_OFFSETS,
     // The cheats' tables (`crate::cheats::CheatTables`): the move patterns, the Cheats page's slots and labels, the
     // debug codes. Unmapped, every level but 01 read other data there (one-move patterns: a side-flip toggling the
     // mirror, a double jump a cheat).

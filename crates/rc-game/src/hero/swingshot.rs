@@ -1063,7 +1063,10 @@ pub(super) fn item_update(h: &mut Hero, c: &mut Ctx, data: &ItemData) {
             4
         }
         4 => {
-            let a = [joint[0], joint[1], h.pos[2].to_f32() + 0.5];
+            // From Ratchet's feet + 0.5 as in state 2: the joint point `0x2645a8` writes into the same vector, which the
+            // game then overwrites with 0x13f3d0 whole (the hand's x / y here blocked the line on Aridia's X11 pull).
+            let mut a = f3(h.pos);
+            a[2] += 0.5;
             if blocked(c, a, pull_t) {
                 if h.air_ticks == 0 { h.set_state(c, 0, true); } else { h.set_state(c, 6, true); }
                 6

@@ -288,7 +288,8 @@ statistics / "hold ○" help (`0x2cde98`), the moby texture scroll of class 179,
 **The scene body 99 / 100** (`hero::scripted`) [H: SetState case 99/100, `0x2370b8` case 99/100, no `0x242930` case]:
 group 0x18, 0x1413fc = 1, the weapon put away, with `play` the idle sequence on eased curve 1; the physics zeroes the
 velocity; nothing leaves it but `SetState(0, 1)`. The gameplay Ratchet is never visible in it (the scene hides him and
-his items, `FUN_002486c0`, and draws its own actor; the vendor hides him too), so this is all of it.
+his items, `FUN_002486c0`, and draws its own actor; the vendor hides him too; the always-on extras 33 / 34 / 35 are
+re-attached to the actor by `FUN_0024a0e8`), so this is all of it.
 
 **Tests**: `moby_anim::modifier_tests` (3), `idle::tests::{modifier_list_order_and_blink, euler_node_quaternions,
 running_lean_targets}`, `type12::tests` (3), `pyrocitor::tests`, `pyro_glow::tests`, `scripted::tests`,
@@ -1477,7 +1478,7 @@ gun), `moby_update/classes/visibomb.rs` (the missile, its launch, end, look, glo
 | | counter > `ticks(90)`: `0x2cb788` | `rc_range::update` → `visibomb::end_flight` (test: the end exactly 90 ticks into the last stretch outside) |
 | `0x302438` | 17 × 14 quads of FX 0x1e from (−16, −16), `(randi(32), randi(32))` each, colour 0x7f7fff, alpha `trunc(n·127.5/ticks(90))` | `rc_range::draw_callback` (at the next tick's `run_frame`) → `visibomb_view::statics` (unit test `static_grid`) |
 | **HUD / render** | `HudDraw`: nothing while 0x17e988 (cleared by it) | `visibomb_view::hud_off` → `hud_render` |
-| | `DrawWorld` end: `0x21b9f8` with 0x16cc00 / 0x16cc30 (ALPHA 0x42: subtract 0x50 from red and blue; bands of 31 rows every 34 minus 46 / 30) | `MissileViewOverlay` |
+| | `DrawWorld` end: `0x21b9f8` with 0x16cc00 / 0x16cc30 (ALPHA 0x42: subtract 0x50 from red and blue; bands of 2 rows every 5 (+0x10 / +0x20) minus 46 / 30) | `MissileViewOverlay` |
 | | `UpdateOcclusion` with 0x15f608 = 1: everything visible | `visibomb_view::all_visible` → `occlusion` |
 | | `UnderwaterTest` 0x20e9f0: the flag 0 while the active camera is of type 6 (`+0x86 == 6`) | `fog_state` (`Camera::type6_active`) |
 

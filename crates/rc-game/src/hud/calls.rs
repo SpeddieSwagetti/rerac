@@ -36,6 +36,10 @@ pub enum Call {
     ShowHealthBolts(i32),
     /// The value behind a data key (the game's `*data` of an element whose value a consumer owns).
     Data(u32, i32),
+    /// The board levels' `0x264298`: the weapon show held off (`super::HudState::weapon_hide`).
+    WeaponHide,
+    /// `update_resource_counter` 0x24fb38: the weapon show's gate − 1 (`super::HudState::resource_counter`).
+    ResourceCounter,
 }
 
 /// The game side's call log (`Services::hud`): appended by the classes, read by the HUD from its cursor.
@@ -70,6 +74,12 @@ impl Calls {
 
     /// The value of data key `key` this tick.
     pub fn data(&mut self, key: u32, value: i32) { self.push(Call::Data(key, value)); }
+
+    /// The board levels' `0x264298` (a race's start with the boost meter).
+    pub fn weapon_hide(&mut self) { self.push(Call::WeaponHide); }
+
+    /// `update_resource_counter` (a board race's end and its Quit Race).
+    pub fn resource_counter(&mut self) { self.push(Call::ResourceCounter); }
 
     /// The boss meter (slot 6 | 0x10, the 0x24b418 / 0x24b538 pair, the boss draw: level06 0x2f9a28, level18
     /// 0x2f7288): publishes `value` under `key` and queues the meter (an unchanged request is a no-op, as in the game);

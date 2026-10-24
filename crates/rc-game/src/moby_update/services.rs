@@ -565,6 +565,9 @@ pub trait SoundSink {
     /// `HeroTeleport` 0x2368e0 moved Ratchet to `pos` (its `EnvNearestSamplePoint`: reverb and music track). Default:
     /// nothing.
     fn hero_teleported(&mut self, _pos: [f32; 3]) {}
+    /// `HeroTeleport(…, 1)`'s `CameraResetBehindHero`: the camera (0x167240, the point `SoundSlotAlloc` measures a new
+    /// sound's start volume from) is behind Ratchet at `pos` from here on in the tick. Default: nothing.
+    fn camera_reset_at(&mut self, _pos: [f32; 3]) {}
     /// `MusicRequestTrack(track, stinger)` 0x27a248 called by a class (the teleporter pads 1135's P+0x40 / P+0x44).
     /// Default: nothing.
     fn music_request(&mut self, _track: i16, _stinger: i16) {}
@@ -579,6 +582,9 @@ pub trait SoundSink {
     /// (`0x13e5c0 + slot·0x70` +0x18 owner, +0x20 position), by which one looping voice moves between the emitters of a
     /// class (the laser fences 838, the spouts 855 on Rilgar). Default: nothing.
     fn hand_over(&mut self, _slot: i32, _moby: MobyId, _pos: [f32; 3]) {}
+    /// `0x2982e8(slot, offset)`: the slot's flag 0x40 (follow the owner at a rotated local offset) and its offset
+    /// (+0x30); the owner is not touched (no owner or state test, as the game). Default: nothing.
+    fn set_offset(&mut self, _slot: i32, _offset: [f32; 3]) {}
 }
 
 /// One glint (0x16eec0 + i·0x20): the sparkle drawn on idle bolts.
@@ -823,6 +829,10 @@ pub struct FxStats {
 #[derive(Clone, Debug)]
 pub struct Services {
     pub timing: Timing,
+    /// The class texture scrolls: `FUN_00263d90(class, s, t)` (level13 `0x25ac38`) adds (s, t) to every vertex ST of
+    /// the class's packets, shared by all its instances; the sum (wrapping s16) by class, drawn by `rc-engine` as the
+    /// records' ST offset ([`World::scroll_class_texture`]).
+    pub class_scroll: std::collections::HashMap<i16, (i16, i16)>,
     /// `0x15ed84`: the level (planet) number.
     pub level: u32,
     /// `0x15f5c4`: game mode (2 = cutscene; bolts hide).
@@ -996,6 +1006,7 @@ impl Services {
     pub fn new() -> Services {
         Services {
             timing: Timing::NTSC,
+            class_scroll: Default::default(),
             level: 1,
             game_mode: 0,
             cheats: Default::default(),
@@ -1210,6 +1221,9 @@ pub struct HeroFields {
     pub ammo_picked: [i32; rc_formats::save_game::ITEM_COUNT],
     /// `0x1413ff = 1`: the hand item hidden (the gold bolt's pickup; `SetState` clears it on foot).
     pub hide_hand: bool,
+    /// 0x141630 (s16): the guards' alert on the disguise (0 calm, 1 suspicious, 2 alarmed): the guards 44 keep the
+    /// highest of the tick; the disguise's update reads and clears it (`crate::hero::hologuise`).
+    pub disguise_alert: i16,
     /// A class's screen marker this tick (`FUN_0020fb60`, `crate::targeting::Markers`: Gaspar's cannon 1201's
     /// crosshair), with the tick it was registered in.
     pub marker: Option<(u64, crate::targeting::Marker)>,
@@ -1354,6 +1368,7 @@ impl HeroFields {
             ammo: h.weapons.ammo,
             ammo_picked: [0; rc_formats::save_game::ITEM_COUNT],
             hide_hand: false,
+            disguise_alert: h.gadgets.disguise.alert,
             marker: None,
             water_level: f32::from_bits(h.water_level.0),
             dive_lock: h.swim.dive_lock,
@@ -1506,6 +1521,7 @@ impl HeroFields {
         }
         // After the calls: the gold bolt stores 0x1413ff after its HeroTeleport's SetState (which clears it).
         if self.hide_hand { h.f13ff = 1; }
+        h.gadgets.disguise.alert = self.disguise_alert;
         // The teleporter's store of 0x1413f5 after its HeroTeleport's SetState (which clears it).
         if let Some(v) = self.hero_hidden { h.f13f5 = v; }
     }
@@ -1776,6 +1792,21 @@ impl<'a> World<'a> {
     }
 
     /// `release_voice_slot(slot)` guarded by the slot's owner ([`SoundSink::release`]).
+    /// A class's texture scroll step as its callers make it: the moby's counter + `d`, kept in 0..0x1000 (above it
+    /// − 0x1000, below 0 + 0x1000), and the class moved by the same step (`FUN_00263d90`, the S lane when `s`, else T).
+    /// Returns the new counter.
+    pub fn scroll_class_step(&mut self, o_class: i16, counter: i32, d: i32, s: bool) -> i32 {
+        let (n, step) = scroll_step(counter, d);
+        if s { self.scroll_class_texture(o_class, step, 0) } else { self.scroll_class_texture(o_class, 0, step) }
+        n
+    }
+
+    /// `FUN_00263d90(class, s, t)`: the class's texture moved by (s, t) in 1/4096 (every instance shares it).
+    pub fn scroll_class_texture(&mut self, o_class: i16, s: i32, t: i32) {
+        let e = self.svc.class_scroll.entry(o_class).or_insert((0, 0));
+        *e = (e.0.wrapping_add(s as i16), e.1.wrapping_add(t as i16));
+    }
+
     pub fn release_sound(&mut self, slot: i32, id: MobyId) {
         if let Some(s) = self.sound.as_deref_mut() { s.release(slot, id); }
     }
@@ -1790,6 +1821,12 @@ impl<'a> World<'a> {
     pub fn hand_over_sound(&mut self, slot: i32, id: MobyId, pos: [f32; 3]) {
         if slot < 0 { return; }
         if let Some(s) = self.sound.as_deref_mut() { s.hand_over(slot, id, pos); }
+    }
+
+    /// `0x2982e8(slot, offset)`: the slot follows its owner at `offset` ([`SoundSink::set_offset`]; the owner stays).
+    pub fn set_sound_offset(&mut self, slot: i32, offset: [f32; 3]) {
+        if slot < 0 { return; }
+        if let Some(s) = self.sound.as_deref_mut() { s.set_offset(slot, offset); }
     }
 
     /// `SoundSetPitchBend(slot, pb)` 0x2a1988 ([`SoundSink::set_pitch_bend`]; the game writes slot −1's field too:
@@ -2081,12 +2118,19 @@ impl<'a> World<'a> {
     /// `PartType53Spawn(f12, f13, f14, pos, life, rgba, a3, t0, vel)` 0x287328 (bolt pickup sparkle): no draw
     /// for `a3` 0 / 1 (`randi(255)` otherwise).
     #[allow(clippy::too_many_arguments)]
-    pub fn part53(&mut self, s12: Pf, s13: Pf, s14: Pf, pos: V4, life: i32, rgba: u32, a3: i32, t0: i8, vel: V4) {
-        let Some(i) = self.part(0x35) else { return };
+    /// Returns the record (`None`: no free one), for the callers that write into it after (the byte +9).
+    pub fn part53(&mut self, s12: Pf, s13: Pf, s14: Pf, pos: V4, life: i32, rgba: u32, a3: i32, t0: i8, vel: V4) -> Option<usize> {
+        let i = self.part(0x35)?;
         let def = self.particles.as_ref().map(|p| p.def_first(0x35)).unwrap_or(0);
         let b8 = match a3 { 0 => 0, 1 => 0x20, _ => self.rng.randi(0xff) as u8 };
         let r = &mut self.particles.as_deref_mut().unwrap().pool.recs[i];
         crate::particles::type53::fill(r, def, s12.0, s13.0, s14.0, pos.map(|x| x.0), life, rgba, b8, t0, [vel[0].0, vel[1].0, vel[2].0]);
+        Some(i)
+    }
+
+    /// A particle record's byte `k` (a caller's write after its spawn).
+    pub fn set_part_byte(&mut self, i: usize, k: usize, v: u8) {
+        if let Some(r) = self.particles.as_deref_mut().and_then(|p| p.pool.recs.get_mut(i)) { r[k] = v; }
     }
 
     /// `PartType60Spawn(size, pos, vel, rgba, life, rot, attach)` 0x288588 (the glint; no draw: `rot` is the caller's
@@ -2462,6 +2506,28 @@ mod tests {
     use super::*;
     use crate::particles::type11;
 
+    /// HMDSOLO's Gemlik lasers (PS2 clip: their texture crawls): each field steps its counter by 0xc0 within 0..0x1000
+    /// and moves its class's texture by the same step (−0xf40 when the counter wraps); two fields of one class move it
+    /// twice a tick, as the game's shared class STs.
+    #[test]
+    fn class_texture_scroll_steps_like_the_game() {
+        assert_eq!(scroll_step(0, 0xc0), (0xc0, 0xc0));
+        assert_eq!(scroll_step(0xfc0, 0xc0), (0x80, -0xf40));
+        assert_eq!(scroll_step(0x20, -0x40), (0xfe0, 0xfc0));
+        let mut t = MobyTable::new(vec![], 4);
+        let hero = crate::hero::Hero::new();
+        let mut rng = crate::rng::Rng::new();
+        let classes = crate::moby_update::ClassTable::default();
+        let mut svc = Services::new();
+        let mut w = World::new(&mut t, &hero, &mut rng, &classes, &mut svc, 1);
+        let a = w.scroll_class_step(404, 0, 0xc0, true);
+        let b = w.scroll_class_step(404, 0xfc0, 0xc0, true);
+        w.scroll_class_step(172, 0x20, -0x40, false);
+        assert_eq!((a, b), (0xc0, 0x80));
+        assert_eq!(svc.class_scroll[&404], ((0xc0 - 0xf40) as i16, 0));
+        assert_eq!(svc.class_scroll[&172], (0, 0xfc0));
+    }
+
     /// A class's `HeroTeleport` turns Ratchet's moby rows to the new yaw when its stores land, before the camera calls
     /// (its `CameraResetBehindHero` snaps behind those rows): the warp pads on Gemlik left the camera facing the old way.
     #[test]
@@ -2607,4 +2673,11 @@ mod tests {
             assert_eq!(rc.state, rd.state, "throttle-only draws, load {load:?}");
         }
     }
+}
+
+/// A texture scroll counter's step (the callers of `FUN_00263d90`): (new counter, the class's step): `counter + d`, and
+/// when that leaves 0..=0x1000 both brought back by 0x1000.
+pub fn scroll_step(counter: i32, d: i32) -> (i32, i32) {
+    let n = counter + d;
+    if 0x1000 < n { (n - 0x1000, d - 0x1000) } else if n < 0 { (n + 0x1000, d + 0x1000) } else { (n, d) }
 }

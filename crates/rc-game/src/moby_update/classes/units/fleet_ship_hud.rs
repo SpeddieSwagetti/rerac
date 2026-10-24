@@ -277,11 +277,11 @@ pub fn hud_frame(w: &mut World, id: MobyId) {
     let v = &w.svc.vehicle;
     if v.health < v.health_max / 10.0 && (w.counter / 90) & 1 != 0 {
         let text = w.svc.interact.msg(WARNING);
-        w.svc.draw_callbacks.screen_texts.push(ScreenText { x: 256, y: 0x186, rgba: 0x8000_0080, text, len: 100, font: rc_formats::font::Font::Small });
+        w.svc.draw_callbacks.screen_texts.push(ScreenText { x: 256, y: 0x186, rgba: 0x8000_0080, text, len: 100, font: rc_formats::font::Font::Small, left: false });
     }
     if w.m(id).state == 8 {
         let text = w.svc.interact.msg(DONE_MSG);
-        w.svc.draw_callbacks.screen_texts.push(ScreenText { x: 256, y: 200, rgba: 0x8000_5080, text, len: 100, font: rc_formats::font::Font::Small });
+        w.svc.draw_callbacks.screen_texts.push(ScreenText { x: 256, y: 200, rgba: 0x8000_5080, text, len: 100, font: rc_formats::font::Font::Small, left: false });
     }
     // ALPHA_1 0x48 (`VU1_addGSregister(0x42, 0x8000000048)`) after the gauge's two quads.
     for q in out.iter_mut().skip(2) { q.add = true; }

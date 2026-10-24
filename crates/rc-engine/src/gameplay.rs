@@ -205,6 +205,11 @@ pub fn boot_state(root: &std::path::Path, index: u32) -> Option<(GameState, Sess
         gs.global.game_beaten = 1;
         println!("game state: RC_GAME_BEATEN=1: Goodies on the pause menu");
     }
+    // RC_SKILL_POINTS=all: every skill point earned (0x13d408, debug): the Goodies' Sketchbook and Epilogue unlock.
+    if std::env::var("RC_SKILL_POINTS").is_ok_and(|v| v.trim() == "all") {
+        for b in gs.global.skill_points.iter_mut() { *b = 1; }
+        println!("game state: RC_SKILL_POINTS=all: every skill point earned");
+    }
     if let Some(ids) = give_items() {
         use rc_game::inventory::{debug_grant, GrantEquip};
         // With the ammo `GiveItem` grants (the item record's +0x12), so a given weapon can fire.
@@ -592,7 +597,7 @@ pub struct Play {
     /// `rc_game::hero::anim::HeroAnimCtl`).
     pub body_anim: Option<rc_game::hero::anim::BodyAnim>,
     /// Ratchet's moby (`0x1acc00[his gameplay instance]`) and animation instance.
-    hero_id: MobyId,
+    pub(crate) hero_id: MobyId,
     hero_k: Option<usize>,
     /// His class (index into `LevelMobys::classes` / `anim`), moby+0x2c scale, palette slots.
     class: usize,
@@ -1700,7 +1705,8 @@ fn drive_statics(p: &mut Play, lv: &crate::level_load::LoadedLevel, occl: &mut M
         // Moby +0x36, the occlusion word MobyProc tests: the game keeps 0 for "the loader's word" (the renderer
         // resolved it per instance) and writes 0x7f80 for a creature revived or moved elsewhere, a thrown crate, …
         occl.set_occlusion_word(ii, m.occlusion);
-        occl.look(ii, moby_render::MobyLook { alpha: m.alpha, mode: m.mode, glow: m.glow, shine_distance: m.b73, draw_dist: Some(m.draw_dist), late: None });
+        let scroll = p.svc.class_scroll.get(&m.o_class).copied().unwrap_or((0, 0));
+        occl.look(ii, moby_render::MobyLook { alpha: m.alpha, mode: m.mode, glow: m.glow, shine_distance: m.b73, draw_dist: Some(m.draw_dist), late: None, scroll });
         if let (Some(a), Some(k)) = (anim.as_deref_mut(), k) {
             a.drive(k, m.anim, p.svc.snapshots.get(id).and_then(|s| s.as_ref()), &m.joint_mods);
         }
@@ -2040,6 +2046,8 @@ fn debug_dump(
         "dump: tick {} hero mode {} state {:#x} pos ({:.2}, {:.2}, {:.2}) body {:?} hero moby {} ratchet moby {} back {}",
         p.game.counter, h.mode, h.state, hp[0], hp[1], hp[2], h.bodies.moby, h.hero_moby(p.hero_id), p.hero_id, h.back.is_some()
     );
+    // The inspect overlay's lines (crate::debug_hud): the facing, the camera, the moby looked at.
+    for l in crate::debug_hud::lines(&p) { println!("dump: {l}"); }
     let shown = p.entities.iter().filter(|&&e| vis.get(e).is_ok_and(|v| v.get())).count();
     println!("dump: engine Ratchet draw: cached hidden {}, {} of {} entities visible", p.ratchet_hidden, shown, p.entities.len());
     let mut visible: std::collections::HashMap<u32, (usize, usize)> = Default::default();
@@ -2529,7 +2537,7 @@ fn tick(
         let s = &p.ratchet.state;
         println!(
             "tick {:5}: state {:#04x} pos {:.4?} yaw {:+.4} air {:3} | anim {}:{} -> {}:{} t {:.3} | cam {:.3?} | {:?} | rng {:#010x} \
-             mobys {n_active} bolts {} free {} dyn {}/{} parts {} grass seq1 {} | hand {}:{} {:?} combo {} hit {} fr {:.2} tip {:.3?} | back {} | snd {} | hp {} inv {} | shake {:.4} {:.4}",
+             mobys {n_active} bolts {} free {} dyn {}/{} parts {} grass seq1 {} | hand {}:{} {:?} combo {} hit {} fr {:.2} tip {:.3?} | back {} | snd {} | hp {} energy {} inv {} | shake {:.4} {:.4} | arm grp {:#x} out {} raised {} layers {:?} recs8/9 {:.3} {:.3} r0..3 {:.3?} irows {:.2?} aim {:.2?}",
             p.game.counter - 2, h.state, h.position(), h.yaw().to_f32(), h.air_ticks, s.seq_a, s.frame_a, s.seq_b, s.frame_b, s.t,
             report.camera.pos_f32(), report.hero, p.game.rng.state, p.svc.counters.bolts, p.game.mobys.free_slots,
             p.dynamic.drawn, p.dynamic.live, particles.as_ref().map_or(0, |s| s.sys.pool.count),
@@ -2538,7 +2546,11 @@ fn tick(
             h.melee.combo, h.melee.hit, p.ratchet.frame.to_f32(), rc_game::hero::physics::to_f32x3(h.melee.tip),
             h.back.as_ref().map_or("-".to_string(), |b| format!("pack {}:{} clank {}:{}", b.pack.anim.seq_b, b.pack.anim.frame_b, b.clank.anim.seq_b, b.clank.anim.frame_b)),
             audio_cell.borrow().as_ref().map_or("-".to_string(), |a| { let st = a.stats(); format!("{} plays, class {}/{}", st.plays, st.class_slots, st.class_sounds) }),
-            h.health, h.f510, p.game.camera.shake[0].offset.to_f32(), p.game.camera.shake[1].offset.to_f32()
+            h.health, h.bodies.energy, h.f510, p.game.camera.shake[0].offset.to_f32(), p.game.camera.shake[1].offset.to_f32(),
+            h.group, h.f13f8, h.f13fa, h.weapons.layers.iter().map(|l| l.map(|l| (l.seq_b, l.weight))).collect::<Vec<_>>(),
+            h.idle.joints[rc_game::hero::idle::joint::ARM_L].cur[1], h.idle.joints[rc_game::hero::idle::joint::ARM].cur[1],
+            h.idle.joints[..4].iter().map(|j| (j.attached, j.cur)).collect::<Vec<_>>(),
+            h.items.slot.item.as_ref().map(|m| m.rows), rc_game::hero::physics::to_f32x3(h.aim_rows[0])
         );
     }
     // The swim's ripple disturbances (`RippleDisturb` 0x2b82a8 on every patch; it draws nothing, so after the tick is
@@ -2717,6 +2729,7 @@ fn upload_dynamic(
 ) {
     let m = &lv.mobys;
     let table = &p.game.mobys;
+    let scroll = &p.svc.class_scroll;
     let first = table.first_dynamic;
     let d = &mut p.dynamic;
     let ship = p.ship.map(|s| s.0);
@@ -2763,12 +2776,8 @@ fn upload_dynamic(
         let lights = m.lighting.as_ref().map(|l| light::moby_lights(&rows, &l.bank, mo.light, [mo.ambient[0], mo.ambient[1], mo.ambient[2]], 0x80));
         let mut rec = moby_render::extra_record(&model, lights.as_ref(), slot as u32 * d.pal_slots);
         moby_render::write_point_light(&mut rec, moby_render::point_light_merge(point_lights, sphere_centre(mo), &rows3(&mo.rows)));
-        // The pilot flame's class texture scroll (rc_game::moby_update::classes::pyro_glow, +0x04) [L: kept per moby; the
-        // game's is the class's, stepped by each flame].
-        if mo.o_class == rc_game::moby_update::classes::pyro_glow::CLASS {
-            let o = rc_game::hero::pyrocitor::glow_pv::SCROLL;
-            if let Some(b) = mo.pvars.get(o..o + 4) { moby_render::set_uv_scroll(&mut rec, 0, i32::from_le_bytes([b[0], b[1], b[2], b[3]]) as i16); }
-        }
+        // The class's texture scroll (`FUN_00263d90`: the Pyrocitor's pilot flame, Gemlik's fields, Qwark's shield).
+        if let Some(&(s, t)) = scroll.get(&mo.o_class) { moby_render::set_uv_scroll(&mut rec, s, t); }
         let at = slot * moby_render::EXTRA_RECORD_SIZE;
         if d.records[at..at + rec.len()] != rec[..] {
             d.records[at..at + rec.len()].copy_from_slice(&rec);

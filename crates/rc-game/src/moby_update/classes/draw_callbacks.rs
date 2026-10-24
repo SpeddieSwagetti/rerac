@@ -30,6 +30,9 @@ pub enum Callback {
     /// The ships' canopy glass (level01 `0x2a70a8`, the boot's `0x2327a0`; draw only, apart from its cross-fade timer):
     /// registered by the cutscene FX driver on list 1 with the matrix of the ship's joint list 0 (its canopy joint) ([`DrawCallbacks::matrices`]).
     ShipGlass,
+    /// Oltanis' arrival strike on Clank (level14 `0x2459c0`, list 1; draw only): registered by the level's scene hook
+    /// with the matrix of the actor's joint list 0 ([`super::cutscene_fx::strike_quads`]).
+    SceneStrike,
     /// The ripple patches of the level's ripple module (751's `0x2fd0c0` on level 01, the patch managers' callbacks on
     /// 05 / 07 / 11 / 12 / 13: `FUN_002b91c8(table, n)`; draw only, apart from the per-patch UV advance the renderer
     /// makes): `crate::water::managers`.
@@ -157,7 +160,7 @@ impl ScreenPrim {
 }
 
 /// `font_print_center_small(x, y, rgba, text, len)` (`font` Small), `font_print_center_large` (`font` Regular: the FX-1
-/// font Lombyte calls "large").
+/// font Lombyte calls "large"); with `left`, `FontPrintLarge(x, y, rgba, text, len)` (from x, `font` Large).
 #[derive(Clone, Debug, PartialEq)]
 pub struct ScreenText {
     pub x: i32,
@@ -166,6 +169,7 @@ pub struct ScreenText {
     pub text: Vec<u8>,
     pub len: i32,
     pub font: rc_formats::font::Font,
+    pub left: bool,
 }
 
 impl DrawCallbacks {
@@ -215,7 +219,7 @@ pub fn run_frame(w: &mut World) {
                 w.svc.draw_callbacks.walloper_dim = Some(dim);
             }
             // Draw only: no game state, no `rand` (crate `rc-engine` fx_draw).
-            Callback::NanotechGlow | Callback::ShipGlass | Callback::RipplePatches | Callback::VendorBeam | Callback::Sea(_) | Callback::UnitGlow(_) | Callback::UnitQuads(_) | Callback::ShipShadow | Callback::ShipTrail | Callback::DisguiseGlow | Callback::HeroGlow => {}
+            Callback::NanotechGlow | Callback::ShipGlass | Callback::SceneStrike | Callback::RipplePatches | Callback::VendorBeam | Callback::Sea(_) | Callback::UnitGlow(_) | Callback::UnitQuads(_) | Callback::ShipShadow | Callback::ShipTrail | Callback::DisguiseGlow | Callback::HeroGlow => {}
         }
     }
 }

@@ -22,7 +22,7 @@
 //! ## Coverage
 //! | address | what | port |
 //! |---|---|---|
-//! | 0x24cee8 0x6b | group 0x16, 0x1415d4 = 8, 0x141402 = 1, 0x1413f7 = 1, jump / airborne 0; from 0x6d..0x6f: the waypoint back to the race line's point nearest Ratchet when that is behind, 0x13fbff / 0x13fc14 / 0x13fc08 / 0x13fc1e = 0; from another group: −(gravity · displacement) kept (group 0x16 again) or the start: level 5 places Ratchet at (247, 287, 76) yaw −2.1, the block 0x13fa10..0x13fc1f cleared (the board moby kept), gravity 22·dt², the host, 0x13fbcc = 70°, the HUD handle −1; global flag 0 set: the slot-0x10 meter queued; the board yaw = the facing; HUD slots 5 / 7 queued; SetAnim(ticks(5), 0x52 / 0x7d, 0) | [`entry`] (slots 5 / 7: [`BoardCmd::RaceHud`]; the slot-0x10 meter: G-LVL-007, logged) |
+//! | 0x24cee8 0x6b | group 0x16, 0x1415d4 = 8, 0x141402 = 1, 0x1413f7 = 1, jump / airborne 0; from 0x6d..0x6f: the waypoint back to the race line's point nearest Ratchet when that is behind, 0x13fbff / 0x13fc14 / 0x13fc08 / 0x13fc1e = 0; from another group: −(gravity · displacement) kept (group 0x16 again) or the start: level 5 places Ratchet at (247, 287, 76) yaw −2.1, the block 0x13fa10..0x13fc1f cleared (the board moby kept), gravity 22·dt², the host, 0x13fbcc = 70°, the HUD handle −1; global flag 0 set: the slot-0x10 meter queued; the board yaw = the facing; HUD slots 5 / 7 queued; SetAnim(ticks(5), 0x52 / 0x7d, 0) | [`entry`] (slots 5 / 7: [`BoardCmd::RaceHud`]; the slot-0x10 meter and the weapon show held off: [`BoardCmd::Meter`], `BoardCmd::Hud("0x264298")`) |
 //! | 0x24cee8 0x6c | group 0x16, 0x1415d4 = 8, 0x1413f7, 0x13fbc0 = 0; SetAnim(ticks(8), 0x55 / 0x7f, 5) | [`entry`] |
 //! | 0x24cee8 0x6d | 0x1413f7, 0x1415d4 = 0, loops stopped, 0x13fc14 = 0, vel = eff·0.7, vel.z = 10·dt; SetAnim(ticks(4), 0x61, 3) | [`entry`] |
 //! | 0x24cee8 0x6e | as 0x6d; water timer ticks(70), water level = 0x13fbf0, splash (3, min(300·\|disp.z\|, 40), 1), voice 3, the float's fields, momentum = eff in the plane (≤ 9.5·dt), blink 0x68; SetAnim(ticks(17), 0x3a, 0) | [`entry`] |
@@ -516,7 +516,8 @@ pub enum BoardCmd {
     RaceHud,
     /// The time trial's meter queued (`queue_animation_update(0x10, …)`) / its flags set to 0 (`FUN_0024b090(h, 0)`).
     Meter(bool),
-    /// The HUD calls of the race not ported (slot 0x10's boost meter, `update_resource_counter`: G-LVL-007), logged.
+    /// The race's other HUD calls by name: `0x264298` (the weapon show held off, `HudState::weapon_hide`) and
+    /// `update_resource_counter` (`HudState::resource_counter`); any other name is logged as not ported.
     Hud(&'static str),
     /// `Help_Request(msg, rec)`: the board weapon's hint.
     Help { msg: i32, rec: i32 },
@@ -628,7 +629,8 @@ pub(super) fn entry(h: &mut Hero, c: &mut Ctx, id: i32, play: bool, _old_sub: i3
                 h.board.boost_spring = f32::from_bits(0x3f9c_61aa);
                 h.board.hud = -1;
                 if world(c.env).is_some_and(|w| w.flag0) {
-                    // 0x264298: the slot of 0x15f980 released (another of the level's elements; logged); the meter:
+                    // 0x264298: the weapon show's element 0x15f980 let go and its gate raised (level 5's copy of 0x15f970 /
+                    // gp−0x7298, the small data 0x10 later); the meter:
                     // queue_animation_update(0x10, …, 0x13fbb4, ticks(17)·60) (the handle 0x13fbd0: the request itself).
                     h.board.cmds.push(BoardCmd::Hud("0x264298"));
                     h.board.cmds.push(BoardCmd::Meter(true));
