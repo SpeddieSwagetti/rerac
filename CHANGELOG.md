@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.3.7-alpha
+
+Fixes from the v0.3.6 bug reports on Discord.
+
+- Holding Circle with the Swingshot no longer leaves Ratchet stuck at the end of the pull.
+- The auto-aim and weapon reticles are solid again in 16:9.
+- Level textures are drawn at the PS2's scale, so cave roofs and walls no longer look twice as dense.
+- The Bomb Glove aims from Ratchet's hand, its bombs sink in water and follow the moving platform they're thrown from, and mines and decoys ride platforms too.
+- Oltanis: the lightning strikes Clank on arrival, and the course lift returns to the start once you've bought the PDA.
+- Buying from the PDA shows the level behind the vendor.
+- Quartu: Clank's mother types her words on the monitor.
+- Gemlik's lasers move again, and the Hologuise's lights turn red when the guards spot you.
+- Novalis' water flowers move aside as Ratchet walks through them.
+- Teleporters play their arrival sound.
+- Hoverboard races show the boost meter even with a weapon held.
+- The Visibomb's view has its scanlines, and In-Level Movies and the Epilogue look right on every planet.
+- Picking up a gold bolt hides the Pyrocitor's glow and pilot flame.
+
 ## v0.3.6-alpha
 
 Fixes from the v0.3.5 bug reports on Discord and from the community's pull requests.
